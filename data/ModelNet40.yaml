@@ -1,4 +1,4 @@
 NAME: ModelNet
-DATA_PATH: data/modelnet40_normal_resampled
+DATA_PATH: /data/cxli/data/3d_point_cloud/modelnet40_normal_resampled
 NUM_CATEGORY: 40
 USE_NORMALS: FALSE

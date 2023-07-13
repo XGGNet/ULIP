@@ -30,6 +30,8 @@ from utils.tokenizer import SimpleTokenizer
 from utils import utils
 from data.dataset_3d import customized_collate_fn
 
+from pdb import set_trace as st
+
 
 def get_args_parser():
     parser = argparse.ArgumentParser(description='ULIP training and evaluation', add_help=False)
@@ -176,8 +178,28 @@ def main(args):
             normalize
         ])
 
+    '''
+    2023/07/13
+
+    train_transform
+    Compose(
+        RandomResizedCrop(size=(224, 224), scale=(0.5, 1.0), ratio=(0.75, 1.3333), interpolation=bilinear)
+        ToTensor()
+        Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+
+    tokenizer
+    <utils.tokenizer.SimpleTokenizer object at 0x7f78d5b04450>
+    
+    args
+    Namespace(batch_size=64, betas=(0.9, 0.98), disable_amp=False, dist_backend='nccl', dist_url='env://', distributed=False, epochs=250, eps=1e-08, eval_freq=1, evaluate_3d=False, gpu=None, local_rank=0, lr=0.001, lr_end=1e-05, lr_start=1e-06, model='ULIP_GENE_SNN', npoints=8192, output_dir='./outputs/gene_GBMLGG', pretrain_dataset_name='shapenet', pretrain_dataset_prompt='shapenet_64', print_freq=10, rank=0, resume='', seed=0, start_epoch=0, test_ckpt_addr='', update_freq=1, use_height=False, validate_dataset_name='modelnet40', validate_dataset_prompt='modelnet40_64', wandb=False, warmup_epochs=1, wd=0.1, workers=10, world_size=1)
+    
+)
+
+    '''
     train_dataset = get_dataset(train_transform, tokenizer, args, 'train')
     val_dataset = get_dataset(None, tokenizer, args, 'val')
+
+
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
