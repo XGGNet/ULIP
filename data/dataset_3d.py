@@ -186,20 +186,29 @@ class ModelNet(data.Dataset):
             shape_ids['train'] = [line.rstrip() for line in open(os.path.join(self.root, 'modelnet40_train.txt'))]
             shape_ids['test'] = [line.rstrip() for line in open(os.path.join(self.root, 'modelnet40_test.txt'))]
 
+        '''
+        ###  shape_ids
+        {'train': ['airplane_0001', 'airplane_0002', 'airplane_0003', 'airplane_0004', 'airplane_0005', 'airplane_0006', 'airplane_0007', 'airplane_0008', 'airplane_0009', ...], 'test': ['airplane_0627', 'airplane_0628', 'airplane_0629', 'airplane_0630', 'airplane_0631', 'airplane_0632', 'airplane_0633', 'airplane_0634', 'airplane_0635', ...]}
+
+        len(shape_ids['train']) = 9843
+        len(shape_ids['test']) = 2468
+        '''
+
         assert (split == 'train' or split == 'test')
-        shape_names = ['_'.join(x.split('_')[0:-1]) for x in shape_ids[split]]
+        shape_names = ['_'.join(x.split('_')[0:-1]) for x in shape_ids[split]] # len(shape_names) = 2468
         self.datapath = [(shape_names[i], os.path.join(self.root, shape_names[i], shape_ids[split][i]) + '.txt') for i
                          in range(len(shape_ids[split]))]
         print_log('The size of %s data is %d' % (split, len(self.datapath)), logger='ModelNet')
 
-        if self.uniform:
+        if self.uniform: # enrer here
             self.save_path = os.path.join(self.root,
                                           'modelnet%d_%s_%dpts_fps.dat' % (self.num_category, split, self.npoints))
+            # '/data/cxli/data/3d_point_cloud/modelnet40_normal_resampled/modelnet40_test_8192pts_fps.dat'
         else:
             self.save_path = os.path.join(self.root,
                                           'modelnet%d_%s_%dpts.dat' % (self.num_category, split, self.npoints))
 
-        if self.process_data:
+        if self.process_data: # true
             if not os.path.exists(self.save_path):
                 # make sure you have raw data in the path before you enable generate_from_raw_data=True.
                 if self.generate_from_raw_data:
@@ -238,6 +247,8 @@ class ModelNet(data.Dataset):
                 print_log('Load processed data from %s...' % self.save_path, logger='ModelNet')
                 with open(self.save_path, 'rb') as f:
                     self.list_of_points, self.list_of_labels = pickle.load(f)
+                    # len(self.list_of_points) = 2468, element.shape= (8192, 6)
+                    # len(self.list_of_labels) = 2468, element: [label]
 
         self.shape_names_addr = os.path.join(self.root, 'modelnet40_shape_names.txt')
         with open(self.shape_names_addr) as file:
@@ -272,7 +283,7 @@ class ModelNet(data.Dataset):
         if not self.use_normals:
             point_set = point_set[:, 0:3]
 
-        if self.use_height:
+        if self.use_height: # false
             self.gravity_dim = 1
             height_array = point_set[:, self.gravity_dim:self.gravity_dim + 1] - point_set[:,
                                                                             self.gravity_dim:self.gravity_dim + 1].min()
@@ -301,15 +312,43 @@ class ShapeNet(data.Dataset):
         self.npoints = config.npoints
         self.tokenizer = config.tokenizer
         self.train_transform = config.train_transform
+
+        '''
+        an example in ULIP-shapenet_triplets_captions.json
+
+         "/export/einstein-vision/3d_vision/3d_object_datasets/ShapeNetCore.v2/rendered_images_P80/02691156-10155655850468db78d106ce0a280f87/02691156-10155655850468db78d106ce0a280f87_r_000.png": [
+        "a low to the ground airplane on a gray background",
+        "a jet fighter plane flying through a gray sky",
+        "a picture of an airplane flying in the air",
+        "a white airplane in the air against a gray background",
+        "an image of an airplane flying in the sky",
+        "an aerial view of a small airplane",
+        "an airplane is seen in the sky",
+        "this is the side view of an airplane",
+        "the airplane is flying through the sky",
+        "there is an airplane in the sky looking down on the ground"
+        
+        '''
+
         self.id_map_addr = os.path.join(config.DATA_PATH, 'taxonomy.json')
         self.rendered_image_addr = config.IMAGE_PATH
+
         self.picked_image_type = ['', '_depth0001']
         self.picked_rotation_degrees = list(range(0, 360, 12))
         self.picked_rotation_degrees = [(3 - len(str(degree))) * '0' + str(degree) if len(str(degree)) < 3 else str(degree) for degree in self.picked_rotation_degrees]
 
+        '''
+        len(self.id_map) = 354
+            synsetId: 大类在wordNet中的id
+            name
+            children: 子类
+            numInstances: 属于该类的样本数量
+        '''
         with open(self.id_map_addr, 'r') as f:
             self.id_map = json.load(f)
 
+        # 文本模板  self.templates
+        # ['a point cloud model of {}.', 'There is a {} in the scene.', 'There is the {} in the scene.', 'a photo of a {} in the scene.', 'a photo of the {} in...the scene.', 'a photo of one {} in...the scene.', 'itap of a {}.', 'itap of my {}.', 'itap of the {}.', 'a photo of a {}.', 'a photo of my {}.', 'a photo of the {}.', 'a photo of one {}.', 'a photo of many {}.', ...]
         self.prompt_template_addr = os.path.join('./data/templates.json')
         with open(self.prompt_template_addr) as f:
             self.templates = json.load(f)[config.pretrain_dataset_prompt]
@@ -323,7 +362,7 @@ class ShapeNet(data.Dataset):
         test_data_list_file = os.path.join(self.data_root, 'test.txt')
 
         self.sample_points_num = self.npoints
-        self.whole = config.get('whole')
+        self.whole = config.get('whole') # True
 
         print_log(f'[DATASET] sample out {self.sample_points_num} points', logger='ShapeNet-55')
         print_log(f'[DATASET] Open file {self.data_list_file}', logger='ShapeNet-55')
@@ -334,19 +373,32 @@ class ShapeNet(data.Dataset):
                 test_lines = f.readlines()
             print_log(f'[DATASET] Open file {test_data_list_file}', logger='ShapeNet-55')
             lines = test_lines + lines
+
+        '''
+        len(self.file_list) = 52481
+        00000:
+        {'taxonomy_id': '02691156', 'model_id': '10155655850468db78d1...ce0a280f87', 'file_path': '02691156-10155655850...280f87.npy'}  
+            model_id应该是指CAD_model   .npy是点云数据
+        '''
         self.file_list = []
+        
+        '''
+        Temporary Debug
+        '''
+        lines = lines[:2]
+
         for line in lines:
             line = line.strip()
             taxonomy_id = line.split('-')[0]
             model_id = line[len(taxonomy_id) + 1:].split('.')[0]
             self.file_list.append({
-                'taxonomy_id': taxonomy_id,
-                'model_id': model_id,
-                'file_path': line
+                'taxonomy_id': taxonomy_id, # 大类ID
+                'model_id': model_id, # sample_id
+                'file_path': line # 点云npy地址
             })
         print_log(f'[DATASET] {len(self.file_list)} instances were loaded', logger='ShapeNet-55')
 
-        self.permutation = np.arange(self.npoints)
+        self.permutation = np.arange(self.npoints) # array([   0,    1,    2, ..., 8189, 8190, 8191])
 
         self.uniform = True
         self.augment = True
@@ -356,7 +408,7 @@ class ShapeNet(data.Dataset):
         self.use_height = config.use_height
         # =================================================
 
-        if self.augment:
+        if self.augment: # True
             print("using augmented point clouds.")
 
     def pc_norm(self, pc):
@@ -375,7 +427,7 @@ class ShapeNet(data.Dataset):
     def __getitem__(self, idx):
         sample = self.file_list[idx]
 
-        data = IO.get(os.path.join(self.pc_path, sample['file_path'])).astype(np.float32)
+        data = IO.get(os.path.join(self.pc_path, sample['file_path'])).astype(np.float32) # 载入点云数据     data.shape = (8192,3)
 
         if self.uniform and self.sample_points_num < data.shape[0]:
             data = farthest_point_sample(data, self.sample_points_num)
@@ -391,21 +443,23 @@ class ShapeNet(data.Dataset):
             data = rotate_point_cloud(data)
             data = data.squeeze()
 
-        if self.use_height:
+        if self.use_height: # false
             self.gravity_dim = 1
             height_array = data[:, self.gravity_dim:self.gravity_dim + 1] - data[:,
                                                                        self.gravity_dim:self.gravity_dim + 1].min()
             data = np.concatenate((data, height_array), axis=1)
             data = torch.from_numpy(data).float()
-        else:
+        else: # enter here
             data = torch.from_numpy(data).float()
+        # data.shape = (8192, 3)
 
         captions = self.synset_id_map[sample['taxonomy_id']]['name']
         captions = [caption.strip() for caption in captions.split(',') if caption.strip()]
-        caption = random.choice(captions)
+        # 'airplane,aeroplane,plane'
+        caption = random.choice(captions) # plane
         captions = []
         tokenized_captions = []
-        if self.use_caption_templates:
+        if self.use_caption_templates: # false
             for template in self.templates:
                 caption = template.format(caption)
                 captions.append(caption)
@@ -413,7 +467,7 @@ class ShapeNet(data.Dataset):
         else:
             tokenized_captions.append(self.tokenizer(caption))
 
-        tokenized_captions = torch.stack(tokenized_captions)
+        tokenized_captions = torch.stack(tokenized_captions) # (1, 77)
 
         picked_model_rendered_image_addr = self.rendered_image_addr + '/' +\
                                            sample['taxonomy_id'] + '-' + sample['model_id'] + '/'
@@ -424,11 +478,12 @@ class ShapeNet(data.Dataset):
 
         try:
             image = pil_loader(picked_image_addr)
-            image = self.train_transform(image)
+            image = self.train_transform(image) # [3, 224, 224]
         except:
             raise ValueError("image is corrupted: {}".format(picked_image_addr))
 
         return sample['taxonomy_id'], sample['model_id'], tokenized_captions, data, image
+        # '02691156', '1021a0914a7207aff927ed529ad90a11', tensor [1,77], tensor [8192,3], tensor [3,224,224]
 
     def __len__(self):
         return len(self.file_list)
@@ -513,7 +568,7 @@ def merge_new_config(config, new_config):
     return config
 
 def cfg_from_yaml_file(cfg_file):
-    config = EasyDict()
+    config = EasyDict() 
     with open(cfg_file, 'r') as f:
         new_config = yaml.load(f, Loader=yaml.FullLoader)
     merge_new_config(config=config, new_config=new_config)
@@ -522,20 +577,31 @@ def cfg_from_yaml_file(cfg_file):
 class Dataset_3D():
     def __init__(self, args, tokenizer, dataset_type, train_transform=None):
         if dataset_type == 'train':
-            self.dataset_name = args.pretrain_dataset_name
+            self.dataset_name = args.pretrain_dataset_name # shapenet
         elif dataset_type == 'val':
-            self.dataset_name = args.validate_dataset_name
+            self.dataset_name = args.validate_dataset_name # modelnet40
         else:
             raise ValueError("not supported dataset type.")
+        
         with open('./data/dataset_catalog.json', 'r') as f:
             self.dataset_catalog = json.load(f)
             self.dataset_usage = self.dataset_catalog[self.dataset_name]['usage']
             self.dataset_split = self.dataset_catalog[self.dataset_name][self.dataset_usage]
             self.dataset_config_dir = self.dataset_catalog[self.dataset_name]['config']
+        
+        '''
+        ### self.dataset_catalog 
+        {'shapenet': {'config': './data/ShapeNet-55.yaml', 'train': 'train', 'test': 'test', 'usage': 'train'}, 'modelnet40': {'config': './data/ModelNet40.yaml', 'train': 'train', 'test': 'test', 'usage': 'test'}}
+        
+        ### self.dataset_usage      test
+        ### self.dataset_split      test
+        ### self.dataset_config_dir     ./data/ModelNet40.yaml
+        '''
+
         self.tokenizer = tokenizer
         self.train_transform = train_transform
-        self.pretrain_dataset_prompt = args.pretrain_dataset_prompt
-        self.validate_dataset_prompt = args.validate_dataset_prompt
+        self.pretrain_dataset_prompt = args.pretrain_dataset_prompt # shapenet_64
+        self.validate_dataset_prompt = args.validate_dataset_prompt # modelnet40_64  这里的64是指text_template有64种
         self.build_3d_dataset(args, self.dataset_config_dir)
 
     def build_3d_dataset(self, args, config):
@@ -548,4 +614,7 @@ class Dataset_3D():
         config.use_height = args.use_height
         config.npoints = args.npoints
         config_others = EasyDict({'subset': self.dataset_split, 'whole': True})
+        '''
+        {'NAME': 'ModelNet', 'DATA_PATH': '/data/cxli/data/3d_p..._resampled', 'NUM_CATEGORY': 40, 'USE_NORMALS': False, 'tokenizer': <utils.tokenizer.Sim...6c89c61d0>, 'train_transform': None, 'pretrain_dataset_prompt': 'shapenet_64', 'validate_dataset_prompt': 'modelnet40_64', 'args': Namespace(CE_grads=F...ld_size=1), 'use_height': False, 'npoints': 8192}
+        '''
         self.dataset = build_dataset_from_cfg(config, config_others)

@@ -8,5 +8,7 @@ bash ./scripts/test_pointmlp.sh /data/cxli/data/3d_point_cloud/initialize_models
 CUDA_VISIBLE_DEVICES=0 python main.py --model ULIP_PN_MLP --npoints 8192 --lr 1e-3 --output-dir ./outputs/reproduce_pointmlp_8kpts
 
 
+CUDA_VISIBLE_DEVICES=0 python main.py --model ULIP_GENE_SNN --lr 1e-3 --output-dir ./outputs/gene_GBMLGG --pre_train_dataset_name modelnet40 --pretrain_dataset_prompt modelnet40_64
+
 
 CUDA_VISIBLE_DEVICES=0 python main.py --model ULIP_GENE_SNN --lr 1e-3 --output-dir ./outputs/gene_GBMLGG

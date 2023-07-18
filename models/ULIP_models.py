@@ -27,6 +27,20 @@ class LayerNorm(nn.LayerNorm):
         ret = super().forward(x.type(torch.float32))
         return ret.type(orig_type)
 
+class Adapter(nn.Module):
+    def __init__(self, c_in, reduction=4):
+        super(Adapter, self).__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(c_in, c_in // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(c_in // reduction, c_in, bias=False),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x):
+        x = self.fc(x)
+        return x
+    
 
 class QuickGELU(nn.Module):
     def forward(self, x: torch.Tensor):
@@ -100,9 +114,21 @@ class ULIP_WITH_IMAGE(nn.Module):
         self.pc_projection = nn.Parameter(torch.empty(kwargs.pc_feat_dims, 512))
         nn.init.normal_(self.pc_projection, std=512 ** -0.5)
 
+        # self.use_visual_adapter = kwargs.args.use_visual_adapter
+        # if self.use_visual_adapter:
+        #     print("Use visual adapter!")
+        #     self.adapter = Adapter(kwargs.vision_width,4)
+
+
     def encode_image(self, image):
-        x = self.visual(image)
-        x = x @ self.image_projection
+        image_feat = self.visual(image)
+
+        # if self.use_visual_adapter:
+        #     x = self.adapter(image_feat)
+        #     ratio = 0.2
+        #     image_feat = ratio * x + (1 - ratio) * image_feat
+
+        x = image_feat @ self.image_projection
 
         return x
 
@@ -148,10 +174,17 @@ class ULIP_WITH_IMAGE(nn.Module):
         pc_embed = pc_feat @ self.pc_projection
         return pc_embed
 
-    def forward(self, pc, text, image=None):
+    def encode_omic(self, x_omic):
+        omic_feat = self.point_encoder(x_omic=x_omic)[0]
+        omic_embed = omic_feat @ self.pc_projection
+        return omic_embed
 
+    def forward(self, pc, text, image=None):
+        # For omic, image ==> torch.Size([1, 3, 512, 512])    
+        # For pc, image ==> torch.Size([1, 3, 224, 224])
+    
         text_embed_all = []
-        for i in range(text.shape[0]):
+        for i in range(text.shape[0]):  #(1,1,77)
             text_for_one_sample = text[i]
             text_embed = self.encode_text(text_for_one_sample)
             text_embed = text_embed / text_embed.norm(dim=-1, keepdim=True)
@@ -160,7 +193,14 @@ class ULIP_WITH_IMAGE(nn.Module):
             text_embed_all.append(text_embed)
 
         text_embed_all = torch.stack(text_embed_all)
-        pc_embed = self.encode_pc(pc)
+
+        '''
+        07/15 adjusted from pc to omic
+        '''
+        # pc_embed = self.encode_pc(pc)
+        pc_embed = self.encode_omic(pc)
+        
+
         if image is not None:
             image_embed = self.encode_image(image)
             return {'text_embed': text_embed_all,
@@ -273,13 +313,15 @@ def ULIP_GENE_SNN(args):
     from models.gene.SNN import SNN
     pc_feat_dims = 128
 
+    snn = SNN()
+
     model = ULIP_WITH_IMAGE(embed_dim=512, vision_width=768, 
-                            point_encoder=SNN, 
+                            point_encoder=snn, 
                             vision_model=vision_model,
                             context_length=77, vocab_size=49408,
-                            transformer_width=512, transformer_heads=8, transformer_layers=12, pc_feat_dims=pc_feat_dims)
+                            transformer_width=512, transformer_heads=8, transformer_layers=12, pc_feat_dims=pc_feat_dims, args=args)
 
-    if not args.evaluate_3d:
+    if not args.evaluate:
         # load the pretrained model
         
         pretrain_slip_model = torch.load('./data/initialize_models/slip_base_100ep.pt', map_location=torch.device('cpu'))
@@ -287,6 +329,7 @@ def ULIP_GENE_SNN(args):
         pretrain_slip_model_params = {param_name.replace('module.', ''): param for param_name, param in
                                       pretrain_slip_model_params.items()}
         
+        # print('###########')
 
         for name, param in model.named_parameters(): # 把slip的参数往
             if name not in pretrain_slip_model_params:
@@ -300,6 +343,10 @@ def ULIP_GENE_SNN(args):
             param.requires_grad = False
             print('load {} and freeze'.format(name))
             param.data.copy_(param_new)
+
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                print('Update parameters {}'.format(name))
 
     return model
 

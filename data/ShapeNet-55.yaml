@@ -1,4 +1,4 @@
 NAME: ShapeNet
-DATA_PATH: data/shapenet-55
-PC_PATH: data/shapenet-55/shapenet_pc
-IMAGE_PATH: data/shapenet-55/rendered_images
+DATA_PATH: /data/cxli/data/3d_point_cloud/shapenet-55
+PC_PATH: /data/cxli/data/3d_point_cloud/shapenet-55/shapenet_pc # point cloud modality
+IMAGE_PATH: /data/cxli/data/3d_point_cloud/shapenet-55/rendered_images # image modality

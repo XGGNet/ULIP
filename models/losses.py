@@ -45,9 +45,11 @@ class ULIPWithImageLoss(nn.Module):
         logits_per_pc_image = logit_scale * pc_embed @ image_embed_all.t()
         logits_per_image_pc = logit_scale * image_embed @ pc_embed_all.t()
 
-        loss = (F.cross_entropy(logits_per_pc_text, self.labels) + \
-                F.cross_entropy(logits_per_text_pc, self.labels)) / 2 + \
-                (F.cross_entropy(logits_per_pc_image, self.labels) + F.cross_entropy(logits_per_image_pc, self.labels)) / 2
+        loss = (F.cross_entropy(logits_per_pc_text, self.labels) +  F.cross_entropy(logits_per_text_pc, self.labels)) / 2 + \
+            (F.cross_entropy(logits_per_pc_image, self.labels) + F.cross_entropy(logits_per_image_pc, self.labels)) / 2
+        # label is the sample index in the batch
+        # the first term is the contrastive loss between gene and text
+        # the second term is the contrastive loss between gene and image
 
         # compute accuracy
         with torch.no_grad():
