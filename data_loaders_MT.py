@@ -95,6 +95,8 @@ class PathomicDataset(Dataset):
         self.t = data[split]['t']
         self.g = data[split]['g']
         self.mode = mode
+
+        self.split = split
         
         if opt.label_dim == 2:
             ### 改成二分类，将标签中的1改为0, 标签中的2改为1
@@ -109,7 +111,7 @@ class PathomicDataset(Dataset):
         #                     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
 
-        self.transforms = transforms.Compose([
+        self.train_transforms = transforms.Compose([
                             transforms.RandomHorizontalFlip(0.5),
                             transforms.RandomVerticalFlip(0.5),
                             transforms.RandomCrop(opt.input_size_path),
@@ -117,6 +119,11 @@ class PathomicDataset(Dataset):
                             transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.05, hue=0.01),
                             transforms.ToTensor(),
                             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+        
+        self.test_transforms = transforms.Compose([
+                            transforms.ToTensor(),
+                            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                            ])
 
     def __getitem__(self, index):
         single_e = torch.tensor(self.e[index]).type(torch.FloatTensor)
@@ -142,7 +149,10 @@ class PathomicDataset(Dataset):
             
         # tokenized_captions.append(self.tokenizer(caption))
         # tokenized_captions = torch.stack(tokenized_captions) 
-        return (self.transforms(single_X_path), caption , single_X_omic, single_e, single_t, single_g)
+        if self.split == 'train':
+            return (self.train_transforms(single_X_path), caption , single_X_omic, single_e, single_t, single_g)
+        elif self.split == 'test':
+            return (self.test_transforms(single_X_path), caption, single_X_omic, single_e, single_t, single_g)
 
     def __len__(self):
         return len(self.X_path)
@@ -176,6 +186,8 @@ class Pathomic_InstanceSample(Dataset):
 
         self.mode = mode  # 'pathomic'
         self.task = opt.task # 'grad'
+
+        self.split = split
         
         # self.transforms = TransformTwice(transforms.Compose([
         #                     transforms.RandomHorizontalFlip(0.5),
@@ -186,15 +198,19 @@ class Pathomic_InstanceSample(Dataset):
         #                     transforms.ToTensor(),
         #                     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]))
 
-        self.transforms = transforms.Compose([
-                    transforms.RandomHorizontalFlip(0.5),
-                    transforms.RandomVerticalFlip(0.5),
-                    transforms.RandomCrop(opt.input_size_path), # 512 > 224
-                    # transforms.Resize([opt.input_size_path, opt.input_size_path]),
-                    transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.05, hue=0.01),
-                    transforms.ToTensor(),
-                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-
+        self.train_transforms = transforms.Compose([
+                            transforms.RandomHorizontalFlip(0.5),
+                            transforms.RandomVerticalFlip(0.5),
+                            transforms.RandomCrop(opt.input_size_path),
+                            # transforms.Resize([opt.input_size_path, opt.input_size_path]),
+                            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.05, hue=0.01),
+                            transforms.ToTensor(),
+                            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+        
+        self.test_transforms = transforms.Compose([
+                            transforms.ToTensor(),
+                            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                            ])
 
         self.num_samples = len(self.X_path) # 1072
 
@@ -245,7 +261,10 @@ class Pathomic_InstanceSample(Dataset):
         single_g = torch.tensor(self.g[index]).type(torch.LongTensor) # tensor(2)  grading
 
         single_X_path = Image.open(self.X_path[index]).convert('RGB')
-        single_X_omic = torch.tensor(self.X_omic[index]).type(torch.FloatTensor)
+        single_X_omic = torch.tensor(self.X_omic[index]).type(torch.FloatTensor) 
+        # Whole ==> 1024,1024     Patch ==> 512,512
+
+
         # return (self.transforms(single_X_path), 0, single_X_omic, single_e, single_t, single_g)
 
         # print("sample index and label:", index, single_g)
@@ -306,8 +325,13 @@ class Pathomic_InstanceSample(Dataset):
         #     idx = sample_idx[i]
         #     print("contrast sample label:", self.g[idx])
 
-        return (self.transforms(single_X_path), tokenized_captions, single_X_omic, single_e, single_t, single_g, index, sample_idx)
+        # return (self.transforms(single_X_path), tokenized_captions, single_X_omic, single_e, single_t, single_g, index, sample_idx)
         # path_img, x_graph, x_omic, censor, survtime, grade ==> path_img, caption, x_omic, censor, survtime, grade
+
+        if self.split == 'train':
+            return (self.train_transforms(single_X_path), tokenized_captions , single_X_omic, single_e, single_t, single_g, index, sample_idx)
+        elif self.split == 'test':
+            return (self.test_transforms(single_X_path), tokenized_captions, single_X_omic, single_e, single_t, single_g, index, sample_idx)
 
 
     def __len__(self):

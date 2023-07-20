@@ -43,7 +43,29 @@ from sklearn.metrics import average_precision_score, f1_score, roc_auc_score, re
 '''
 CUDA_VISIBLE_DEVICES=0 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/gene_GBMLGG_vis_adapter --input_size_path 224 --use_visual_adapter --batch_size 64 
 
-CUDA_VISIBLE_DEVICES=1 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/gene_GBMLGG_no_vis_adapter --input_size_path 224 --batch_size 1024
+no_vis_tuning
+
+CUDA_VISIBLE_DEVICES=2 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/gene_GBMLGG_0719/fix_vis --input_size_path 224 --train_bz 1072  --test_bz 1500 --test_mode patch --tune_visual none
+
+
+vis_adapter
+
+CUDA_VISIBLE_DEVICES=3 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/gene_GBMLGG_0719/vis_adapter --input_size_path 224 --train_bz 1072  --test_bz 1500 --test_mode patch --tune_visual adapter
+
+
+vis_prompt
+
+# deep_prompt
+CUDA_VISIBLE_DEVICES=0 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/gene_GBMLGG_0719/vis_prompt --input_size_path 224 --train_bz 192  --test_bz 1500 --test_mode patch --tune_visual prompt 
+
+# shallow_promot
+CUDA_VISIBLE_DEVICES=1 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/gene_GBMLGG_0719/vis_shallow_prompt --input_size_path 224 --train_bz 192  --test_bz 1500 --test_mode patch --tune_visual prompt 
+
+
+
+CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.launch --nproc_per_node=8 main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/gene_GBMLGG_0719/vis_prompt --input_size_path 224 --train_bz 1072  --test_bz 1500 --test_mode patch --tune_visual prompt 
+
+
 
 '''
 
@@ -238,7 +260,9 @@ def get_args_parser():
     parser.add_argument('--niter', type=int, default=0, help='# of iter at starting learning rate')
     parser.add_argument('--niter_decay', type=int, default=30, help='# of iter to linearly decay learning rate to zero')
     parser.add_argument('--epoch_count', type=int, default=1, help='start of epoch')
-    parser.add_argument('--batch_size', type=int, default=256, help="Number of batches to train/test for. Default: 256")
+
+    parser.add_argument('--train_bz', type=int, default=256)
+    parser.add_argument('--test_bz', type=int, default=256)
 
     parser.add_argument('--lambda_cox', type=float, default=1)
     parser.add_argument('--lambda_reg', type=float, default=3e-4)
@@ -269,8 +293,8 @@ def get_args_parser():
     parser.add_argument('--GNN', default='GCN', type=str, help='GCN | GAT | SAG. graph conv mode for pooling')
     parser.add_argument('--patience', default=0.005, type=float)
 
-
-    parser.add_argument('--use_visual_adapter', action='store_true')
+    parser.add_argument('--test_mode', type=str, default='full', choices=['full', 'patch'])
+    parser.add_argument('--tune_visual', type=str, default='none', choices=['none', 'adapter', 'shallow_prompt', 'deep_prompt'])
 
 
     return parser
@@ -306,6 +330,7 @@ def main(args):
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], bucket_cap_mb=200, find_unused_parameters=False)
 
+
     # define loss function (criterion) and optimizer
     criterion = models.get_loss(args).cuda(args.gpu)
 
@@ -314,7 +339,8 @@ def main(args):
         if not p.requires_grad:
             print('in optimizer freeze {}'.format(n))
             continue  # frozen weights
-        print('update parameters {}'.format(n)) # 观察到只更新 point_encoder部分
+        print('update parameters {}'.format(n)) 
+        # 原始版本 ~ 观察到只更新 point_encoder部分 
         if p.ndim < 2 or 'bias' in n or 'ln' in n or 'bn' in n:
             p_non_wd.append(p)
         else:
@@ -362,13 +388,13 @@ def main(args):
     # Data loading code
     print("=> creating dataset")
     tokenizer = SimpleTokenizer()
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
-    train_transform = transforms.Compose([
-            transforms.RandomResizedCrop(224, scale=(0.5, 1.0)),
-            transforms.ToTensor(),
-            normalize
-        ])
+    # normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+    #                                  std=[0.229, 0.224, 0.225])
+    # train_transform = transforms.Compose([
+    #         transforms.RandomResizedCrop(224, scale=(0.5, 1.0)),
+    #         transforms.ToTensor(),
+    #         normalize
+    #     ])
 
     # args.train_transform = train_transform
 
@@ -401,8 +427,6 @@ def main(args):
     '''
     # train_dataset = get_dataset(train_transform, tokenizer, args, 'train')
     # val_dataset = get_dataset(None, tokenizer, args, 'val')
-
-    
 
     '''
     OMIC
@@ -450,28 +474,59 @@ def main(args):
     # len(train_dataset) = 1072, len(test_dataset) = 253
     data_patches = data_cv_splits_patches[k]
     test_patches_dataset = pathomic_patches_dataset(args, data_patches)
+    # len(test_patches_dataset) = 2277
 
-    val_dataset = test_patches_dataset # 在patches上测试
+
+    '''
+    Temporary comments for debug
+    '''
+    if args.test_mode == 'full':
+        val_dataset = test_dataset
+    elif args.test_mode == 'patch' or args.test_mode == 'patches':
+        val_dataset = test_patches_dataset
+    else:
+        raise ValueError('Invalid test mode')
+    
+    # val_dataset = test_patches_dataset # 在patches上测试
+    # val_dataset = test_dataset
+
 
     # 似乎是 训练的前面阶段用whole image 测试, 后期再用 patches测试
     # 这里我们暂时先用whole image; 先调通再说
 
 
     if args.distributed:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
+        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset) 
         val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset)
     else:
         train_sampler = None
         val_sampler = None
 
+    # len = 1072
+    # train_loader = torch.utils.data.DataLoader(
+    #     train_dataset, batch_size=args.train_bz, shuffle=(train_sampler is None),
+    #     num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True,
+    #     collate_fn=customized_collate_fn)
+
+    # len = 2277
+    # val_loader = torch.utils.data.DataLoader(
+    #     val_dataset, batch_size=args.test_bz, shuffle=(val_sampler is None),
+    #     num_workers=args.workers, pin_memory=True, sampler=val_sampler, drop_last=False)
+
+    '''
+    0719 train_loader shuffle=True,    val_loader shuffle=False
+    '''
+    # len = 1072
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
+        train_dataset, batch_size=args.train_bz, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True,
         collate_fn=customized_collate_fn)
 
+    # len = 2277
     val_loader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=args.batch_size, shuffle=(val_sampler is None),
+        val_dataset, batch_size=args.test_bz, shuffle=False,
         num_workers=args.workers, pin_memory=True, sampler=val_sampler, drop_last=False)
+
 
     lr_schedule = utils.cosine_scheduler(args.lr, args.lr_end, args.epochs,
         len(train_loader) // args.update_freq, warmup_epochs=args.warmup_epochs, start_warmup_value=args.lr_start)
@@ -490,7 +545,7 @@ def main(args):
         '''
         Temp debug
         '''
-        # val_stats = test_zeroshot_3d_core(val_loader, model, tokenizer, args)
+        # val_stats = test_zeroshot_pathomic_core(val_loader, model, tokenizer, args)
         
 
         if args.distributed:
@@ -614,10 +669,22 @@ def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule,
 
         scaler.scale(loss).backward()
 
+        # Temporary debug
+        # print('\n ######## Debug for backward ##########\n')
+        # for name, param in model.named_parameters():
+        #     if param.grad is None:
+        #         print(name)
+
+
         if (data_iter + 1) % args.update_freq != 0:
             continue
 
         # compute gradient and do SGD step
+
+        '''
+        Temporary comments for debug
+        '''
+
         scaler.step(optimizer)
         scaler.update()
         model.zero_grad(set_to_none=True)
@@ -628,7 +695,7 @@ def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule,
         logit_scale = utils.get_model(model).logit_scale.exp().item()
 
         for k in loss_dict:
-            metrics[k].update(loss_dict[k].item(), args.batch_size)
+            metrics[k].update(loss_dict[k].item(), args.train_bz)
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -665,9 +732,14 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
     mm_rocauc = AverageMeter('ROCAUC', ':6.2f')
     mm_ap = AverageMeter('AP', ':6.2f')
 
+    # 512,512 -> 224, 224  ==> 3*3
+    if args.test_mode == 'full':
+        sw_ratio = 1024//224 + 1
+    elif args.test_mode == 'patch' or args.test_mode == 'patches':
+        sw_ratio = 512//224 + 1
 
     progress = ProgressMeter(
-    len(test_loader),
+    len(test_loader)*sw_ratio * sw_ratio,
     [batch_time, omic_top1],
     prefix='Test: ')
 
@@ -711,7 +783,6 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
                 texts = texts[None, ...]
 
             class_embeddings = utils.get_model(model).encode_text(texts) # 调用SLIP
-
             class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
             class_embeddings = class_embeddings.mean(dim=0)
             class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
@@ -727,32 +798,64 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
         
         # per_class_correct_top5 = collections.defaultdict(int)
 
-        for i,  inputs in enumerate(test_loader):
+        for i, inputs in enumerate(test_loader):
             # (pc, target, target_name)
-            x_path, x_text , x_omic, single_e, single_t, single_g = inputs
+            x_path_full, x_text , x_omic, single_e, single_t, single_g = inputs
 
             target_name = x_text
             target = single_g
-
 
             for name in target_name:
                 per_class_stats[name] += 1
 
             # pc = pc.cuda(args.gpu, non_blocking=True)
 
-            x_path = x_path.cuda(args.gpu, non_blocking=True)
-            x_omic = x_omic.cuda(args.gpu, non_blocking=True)
+            sw_cnt = 0
+            temp_record = 0
+            for h in range(0, x_path_full.shape[-2], args.input_size_path):
+                for w in range(0, x_path_full.shape[-1], args.input_size_path):
 
+                    if h+args.input_size_path <= x_path_full.shape[-2]:
+                        h_start = h
+                        h_end = h+args.input_size_path
+                    else:
+                        h_start = x_path_full.shape[-2] - args.input_size_path
+                        h_end = x_path_full.shape[-2]
+                    
+                    if w+args.input_size_path <= x_path_full.shape[-1]:
+                        w_start = w
+                        w_end = w+args.input_size_path
+                    else:
+                        w_start = x_path_full.shape[-1] - args.input_size_path
+                        w_end = x_path_full.shape[-1]
+                        
+                    
+                    x_path = x_path_full[:, :, h_start:h_end, w_start:w_end]
+                    temp_record += x_path.sum()
+
+                    x_path = x_path.cuda(args.gpu, non_blocking=True)
+
+                     # encode pathology
+                    if sw_cnt == 0:
+                        path_features = utils.get_model(model).encode_image(x_path)
+                        path_features = path_features / path_features.norm(dim=-1, keepdim=True)
+                    else:
+                        _path_features = utils.get_model(model).encode_image(x_path)
+                        _path_features = _path_features / _path_features.norm(dim=-1, keepdim=True)
+
+                        path_features += _path_features
+                    sw_cnt += 1
+                
+            path_features = path_features /sw_cnt
+
+            x_omic = x_omic.cuda(args.gpu, non_blocking=True)
             target = target.cuda(args.gpu, non_blocking=True)
 
             # # encode pc
             # pc_features = utils.get_model(model).encode_pc(pc)
             # pc_features = pc_features / pc_features.norm(dim=-1, keepdim=True)
 
-            # encode pathology
-            path_features = utils.get_model(model).encode_image(x_path)
-            path_features = path_features / path_features.norm(dim=-1, keepdim=True)
-
+           
             # encode geneomic
             omic_features = utils.get_model(model).encode_omic(x_omic)
             omic_features = omic_features / omic_features.norm(dim=-1, keepdim=True)
@@ -763,6 +866,32 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
             logits_per_path=  path_features @ text_features.t()
             logits_per_omic=  omic_features @ text_features.t()
 
+            
+            # logits_per_omic.mean()    -0.0023   -0.0023  0.0183  0.0330 0.0431
+            # logits_per_path.mean()    0.1201   0.1197 0.1201  0.1199 0.1197
+            # target.mean()     282  282 282  282 282
+
+            # path_features.sum()  296.0240   284.3953  
+            # omic_features.sum()  1202.4694   1160.4327 
+            # text_features.sum()  4.0695  4.0695  
+
+            # x_path.sum()  18715120   19095696  19076868
+            # x_omic.sum()  -642.9651  -642.9651  -642.9651  
+
+            # x_path
+
+
+            # logits_per_omic.mean()   -7.4722
+            # logits_per_path.sum()   369.9125
+            # path_features.sum()  296.0240
+            # omic_features.sum()  1202.4694
+            # text_features.sum()  4.0695
+            # x_path.sum() 79574928  
+            # x_omic.sum() -3282.3945
+            # temp_record   tensor(7.1498e+08)
+
+
+
 
             # measure accuracy and record loss
             # (acc1, acc5), correct = accuracy(logits_per_pc, target, topk=(1, 5))
@@ -771,21 +900,26 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
             # top1.update(acc1.item(), pc.size(0))
             # top5.update(acc5.item(), pc.size(0))
 
-            # TODO: 增加图像 / 多模态的测试结果
+            # TODO: 增加图像 / 多模态的测试结果...............................................
             # 五类以内, 所以acc5 不work
             # (acc1, acc5), correct = accuracy(logits_per_omic, target, topk=(1, 5))
-            # acc1, acc5 = utils.scaled_all_reduce([acc1, acc5])
-            # top1.update(acc1.item(), x_omic.size(0))
-            # top5.update(acc5.item(), x_omic.size(0))
+            # acc1, acc5 = utils.scaled_all_reduce([acc1, acc5]).....................................................................................................................................................
+            # top1.update(acc1.item(), x_omic.size(0))................
+            # top5.update(acc5.item(), x_omic.size(0)).
 
             omic_acc1, omic_correct = accuracy(logits_per_omic, target)
             omic_top1.update(omic_acc1[0].item(), x_omic.size(0))
+
             omic_rocauc.update(roc_auc_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_omic,-1).cpu().numpy(), average ='micro')*100)
+
             omic_ap.update(average_precision_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_omic,-1).cpu().numpy(), average='micro')*100)
+
 
             path_acc1, path_correct = accuracy(logits_per_path, target)
             path_top1.update(path_acc1[0].item(), x_path.size(0))
+
             path_rocauc.update(roc_auc_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_path,-1).cpu().numpy(), average ='micro')*100)
+
             path_ap.update(average_precision_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_path,-1).cpu().numpy(), average='micro')*100)
 
             prob_mm = (F.softmax(logits_per_omic,-1) + F.softmax(logits_per_path, -1)) / 2
@@ -929,12 +1063,19 @@ def test_zeroshot_pathomic(args):
     # len(train_dataset) = 1072, len(test_dataset) = 253
     data_patches = data_cv_splits_patches[k]
     test_patches_dataset = pathomic_patches_dataset(args, data_patches)
+    # len(test_patches_dataset) = 
 
-    val_dataset = test_patches_dataset # 在patches上测试
+    # val_dataset = test_patches_dataset # 在patches上测试
+    if args.test_mode == 'full':
+        val_dataset = test_dataset
+    elif args.test_mode == 'patch' or args.test_mode == 'patches':
+        val_dataset = test_patches_dataset
+    else:
+        raise ValueError('Invalid test mode')
 
 
     test_loader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=args.batch_size, shuffle=False,
+        val_dataset, batch_size=args.test_bz, shuffle=False,
         num_workers=args.workers, pin_memory=True, sampler=None, drop_last=False
     )
     results = test_zeroshot_pathomic_core(test_loader, model, tokenizer, args)

@@ -808,6 +808,6 @@ def accuracy(output, target, topk=(1,)):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('ULIP training and evaluation', parents=[get_args_parser()])
-    args = parser.parse_args()
+    args = parser.parse_args(args=[])
     os.makedirs(args.output_dir, exist_ok=True)
     main(args)

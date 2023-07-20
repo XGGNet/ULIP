@@ -24,11 +24,58 @@
     1. 为啥加了visual adapter的 visual performance 几乎不怎么上涨..? --> 对比损失只加在 img-gene & gene-text, 因此visual branch的分类性能确实不会增长..
        1. check 下CG3D里的对比损失加在哪些分支? --> 微调时也会加在img&text之间.
     2. 为啥不加visual adapter的 visual performance 还会动...? --> 这里有点解释不通, 没动visual branch参数, 为啥输出还会动?
-       1. *try 把adapter相关的东西remove, 跑一遍只tune gene branch的, 看看visual performance 会不会变?
-3. 为啥 acc 和 AP&AUC的排序完全不同?
-   1. metric code写错了?
-   2. 输入metric calculator的pred/label写错了?
-   
+       1. try 把adapter相关的东西remove, 跑一遍只tune gene branch的, 看看visual performance 会不会变? --> 发现只tune gene branch, visual 和 generic branch的logits也都会变...好诡异.. --> * [问题找到了] **因为test_sample 被aug了...**
+          1. check 优化参数里有无visual parameters --> 无
+          2. try把optimizer全停了, visual 性能会不会动? --> 还是会, 看来因为是test_loader里的数据增强...
+          3. check下是不是model里添加的随机project layer的问题?
+
+/########## The above issues have been addressed ##########
+  
+1. 其实数据量问题没那么严重, 因为还涉及到patch-wise random sampling
+2. [X] test data 去除 aug
+3. [X] test data 采用slide window testing
+   1. [X] verify test_dataset 是否正常?
+   2. [X] verify test_dataset_patches 是否正常?
+4. [X] 测试 test_data不变后, 把 备注掉的 optimzier恢复
+5. [X] 只tune基因branch, 看下visual性能会不会变? -> 不变了, 正常了
+6. 为啥 acc 和 AP&AUC的排序完全不同?
+   1. check下师姐里论文 ACC / AP / AUC 的大致比例关系 -> 看上去感觉是师姐的MMT的三个指标的比例是对的; 而geneLIP的比例不大对的上..
+      1.  check GeneLIP 里
+         1. [X] metric code写错了? >>  好像看不出哪有明显错误
+         2. [X] 输入metric calculator的pred/label写错了? >>  好像看不出哪有明显错误
+      2. 好像 logits_per_omic 预测比较均匀的结果? 这个会一直保持嘛? >> 先skip吧, 整理最新结果看看; 如果还是有问题, 可以先只看acc, acc应该是对的
+
+/####### Several fundamental bugs have been addressed ####
+/####### Next, we mainly aim to get the baseline results as well we the VPT & descriptions from FM
+1. 跑出单折&patches的结果对比
+   1. [X] 师姐MICCAI22
+   2. [X] GeneLIP 只tune gene branch 
+      1. **Found bug 0719** loss 有点问题, omic和text的一个对齐项写成了omic和image的 --> 这样会导致gene的分类会差..  folder: <gene_GBMLGG_0719 [Bug]>
+   3. [X] GeneLIP + tune visual_adapter + loss上加入vis和text的Con_loss
+   4. [X] *GeneLIP + tune visual_prompt + loss上加入vis和text的Con_loss* >> 可能需要先跑通CG3D才行.
+      1. [] ~~CG3D 装环境~~
+      2. [] ~~跑通CG3D~~  -> 看了下, server自带的CUDA12.2版本太高. 目前的torch只对应到11.7.. 不然还是直接移植..
+      3. ~~[] 跑通VPT~~
+         1. ~~src/models/vit_backbones 常规VIT模型~~
+         2. ~~src/models/vit_prompt  VIT + VPT~~
+      4. [X] 代码移植 -> 直接把timm里的底层函数改了...或者重新写个model.... 比跑通一个其他的repo快多了..
+         1. 为啥显存一直爆.... 只是加了一堆prompt呀... -> 因为SNN巨小, 就是MLP...
+         2. prompt is verified to be tuned.
+         3. ~~[] 调通并行模式...~~  >> 先不浪费时间; 往下做
+         4. [X] 这里是比较粗暴的直接改了网络 只能用prompt; 后面可以改成可以参数选择是否需要Prompt 
+            1. [X] 记录Deep prompt 结果
+            2. [] 记录Shallow prompt 结果
+   5. [] *Stronger CLIP backbone for pathology domain*
+      1. [X] Study >> TOP priority: BiomedCLIP;  2nd priority: MI-Zero 
+      2. [] load BiomedCLIP
+      3. [] load MI-Zero
+   6. [] class prompt ==> itemized descriptions
+      1. [] Stdudy FM
+      2. [] Coding
+   7. AC 和 AP / AUC 指标趋势不一致的问题
+      1. 首先study排除函数的问题, 两边函数进行同样的输入, 看输出是否一致?
+
+
 
 
 
