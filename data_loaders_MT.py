@@ -97,6 +97,8 @@ class PathomicDataset(Dataset):
         self.mode = mode
 
         self.split = split
+
+        self.opt = opt
         
         if opt.label_dim == 2:
             ### 改成二分类，将标签中的1改为0, 标签中的2改为1
@@ -110,6 +112,13 @@ class PathomicDataset(Dataset):
         #                     transforms.ToTensor(),
         #                     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
+        if opt.normalization == 'clip':
+            normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],std=[0.229, 0.224, 0.225])
+        elif opt.normalization == 'biomedclip':
+            normalize = transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
+        elif opt.normalization == 'data':
+            normalize = transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+
 
         self.train_transforms = transforms.Compose([
                             transforms.RandomHorizontalFlip(0.5),
@@ -118,12 +127,15 @@ class PathomicDataset(Dataset):
                             # transforms.Resize([opt.input_size_path, opt.input_size_path]),
                             transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.05, hue=0.01),
                             transforms.ToTensor(),
-                            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+                            # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))  
+                            normalize
+                            ])
         
         self.test_transforms = transforms.Compose([
                             transforms.ToTensor(),
-                            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-                            ])
+                            # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                            normalize
+                                                 ])
 
     def __getitem__(self, index):
         single_e = torch.tensor(self.e[index]).type(torch.FloatTensor)
@@ -142,10 +154,38 @@ class PathomicDataset(Dataset):
             single_X_omic = torch.tensor(self.X_omic[index]).type(torch.FloatTensor)
             # print(single_X_path, self.transforms(single_X_path).shape)
 
-        grading_name = {0: 'II', 1: 'III', 2: 'IV'}
-        # caption = f'A pathology slide with WHO grading {grading_name[ int(single_g) ]}'
-        # templates = ['A pathology slide with grade {} gliomas']
-        caption = f'A pathology slide with grade {grading_name[ int(single_g) ]} gliomas'
+
+        if self.opt.text_mode == 'sentence':
+            grading_name = {0: 'II', 1: 'III', 2: 'IV'}
+            # caption = f'A pathology slide with WHO grading {grading_name[ int(single_g) ]}'
+            # templates = ['A pathology slide with grade {} gliomas']
+            caption = f'A pathology slide with grade {grading_name[ int(single_g) ]} gliomas'
+        elif self.opt.text_mode == 'description':
+            caption_candidate = {
+                'A pathology slide with grade II gliomas':
+                [
+                "The cells tend to be relatively uniform in size and shape, and they may be arranged in a pattern that resembles the normal organization of tissue.",
+                "The cells have a relatively low rate of division (mitotic rate) and may be surrounded by normal brain tissue.",
+                "The tumor may have a well-defined border between the tumor and the surrounding tissue."
+                ],
+                'A pathology slide with grade III gliomas':
+                [
+                "The cells tend to be more variable in size and shape, and they may show signs of abnormal division (mitotic figures).",
+                "The cells may be arranged in a more irregular pattern and may infiltrate the surrounding brain tissue.",
+                "There may be areas of dead tissue (necrosis) within the tumor."
+                ],
+                ' A pathology slide with grade IV gliomas':
+                [
+                'The cells tend to be highly abnormal in appearance and may be very variable in size and shape, with large, irregular nuclei.',
+                'There may be a high degree of mitotic activity, with many cells dividing rapidly.',
+                'The tumor may have a very irregular border and may infiltrate extensively into the surrounding tissue.'
+                'There may be areas of necrosis within the tumor.'
+                ]
+            }
+            caption = list(caption_candidate.values())[int(single_g)]
+            
+
+            
             
         # tokenized_captions.append(self.tokenizer(caption))
         # tokenized_captions = torch.stack(tokenized_captions) 
@@ -182,6 +222,7 @@ class Pathomic_InstanceSample(Dataset):
         self.g = data[split]['g']
 
         self.tokenizer = opt.tokenizer
+        self.model =opt.model
         # self.train_transform = opt.train_transform
 
         self.mode = mode  # 'pathomic'
@@ -198,6 +239,13 @@ class Pathomic_InstanceSample(Dataset):
         #                     transforms.ToTensor(),
         #                     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]))
 
+        if opt.normalization == 'clip':
+            normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],std=[0.229, 0.224, 0.225])
+        elif opt.normalization == 'biomedclip':
+            normalize = transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
+        elif opt.normalization == 'data':
+            normalize = transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            
         self.train_transforms = transforms.Compose([
                             transforms.RandomHorizontalFlip(0.5),
                             transforms.RandomVerticalFlip(0.5),
@@ -205,11 +253,14 @@ class Pathomic_InstanceSample(Dataset):
                             # transforms.Resize([opt.input_size_path, opt.input_size_path]),
                             transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.05, hue=0.01),
                             transforms.ToTensor(),
-                            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+                            # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                            normalize
+                            ])
         
         self.test_transforms = transforms.Compose([
                             transforms.ToTensor(),
-                            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                            # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                            normalize
                             ])
 
         self.num_samples = len(self.X_path) # 1072
@@ -253,6 +304,8 @@ class Pathomic_InstanceSample(Dataset):
             
             # print("positive:", self.cls_positive)
             # print("negative:", self.cls_negative)
+
+            self.opt = opt
 
     def __getitem__(self, index):
 
@@ -306,14 +359,49 @@ class Pathomic_InstanceSample(Dataset):
             '''
             Caption for grading
             '''
-            captions = []
+            # captions = []
             tokenized_captions = []
-            grading_name = {0: 'II', 1: 'III', 2: 'IV'}
-            # caption = f'A pathology slide with WHO grading {grading_name[ int(single_g) ]}'
-            caption = f'A pathology slide with grade {grading_name[ int(single_g) ]} gliomas'
-            
-            tokenized_captions.append(self.tokenizer(caption))
-            tokenized_captions = torch.stack(tokenized_captions) 
+            # grading_name = {0: 'II', 1: 'III', 2: 'IV'}
+            # # caption = f'A pathology slide with WHO grading {grading_name[ int(single_g) ]}'
+            # caption = f'A pathology slide with grade {grading_name[ int(single_g) ]} gliomas'
+
+            # if 'mizero' not in self.model.lower():
+            #     tokenized_captions.append(self.tokenizer(caption))
+            #     tokenized_captions = torch.stack(tokenized_captions) 
+            # else:
+            #     tokenized_captions = caption
+
+            if self.opt.text_mode == 'sentence':
+                grading_name = {0: 'II', 1: 'III', 2: 'IV'}
+                # caption = f'A pathology slide with WHO grading {grading_name[ int(single_g) ]}'
+                # templates = ['A pathology slide with grade {} gliomas']
+                caption = f'A pathology slide with grade {grading_name[ int(single_g) ]} gliomas'
+            elif self.opt.text_mode == 'description':
+                caption_candidate = {
+                    'A pathology slide with grade II gliomas':
+                    [
+                    "The cells tend to be relatively uniform in size and shape, and they may be arranged in a pattern that resembles the normal organization of tissue.",
+                    "The cells have a relatively low rate of division (mitotic rate) and may be surrounded by normal brain tissue.",
+                    "The tumor may have a well-defined border between the tumor and the surrounding tissue."
+                    ],
+                    'A pathology slide with grade III gliomas':
+                    [
+                    "The cells tend to be more variable in size and shape, and they may show signs of abnormal division (mitotic figures).",
+                    "The cells may be arranged in a more irregular pattern and may infiltrate the surrounding brain tissue.",
+                    "There may be areas of dead tissue (necrosis) within the tumor."
+                    ],
+                    ' A pathology slide with grade IV gliomas':
+                    [
+                    'The cells tend to be highly abnormal in appearance and may be very variable in size and shape, with large, irregular nuclei.',
+                    'There may be a high degree of mitotic activity, with many cells dividing rapidly.',
+                    'The tumor may have a very irregular border and may infiltrate extensively into the surrounding tissue.'
+                    'There may be areas of necrosis within the tumor.'
+                    ]
+                }
+                caption = list(caption_candidate.values())[int(single_g)]
+
+            tokenized_captions = self.opt.tokenizer(caption).unsqueeze(0)
+                
 
         # print("sample index:", index)
         # print("positive index:", pos_idx)
@@ -346,3 +434,13 @@ class TransformTwice:
         out1 = self.transform(inp)
         out2 = self.transform(inp)
         return out1, out2
+
+def tokenize(tokenizer, texts):
+    tokens = tokenizer.batch_encode_plus(texts, 
+                                         max_length = 64,
+                                         add_special_tokens=True, # Add '[CLS]' and '[SEP]'
+                                         return_token_type_ids=False,
+                                         truncation = True,
+                                         padding = 'max_length',
+                                         return_attention_mask=True)
+    return tokens['input_ids'], tokens['attention_mask']

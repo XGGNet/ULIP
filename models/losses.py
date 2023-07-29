@@ -82,8 +82,8 @@ class GeneLIPWithImageLoss(nn.Module):
         omic_embed = outputs['omic_embed']
         text_embed = outputs['text_embed']
         image_embed = outputs['image_embed']
-        logit_scale = outputs['logit_scale']
-        local_batch_size = omic_embed.size(0)
+        logit_scale = outputs['logit_scale'] # 76 |  
+        local_batch_size = omic_embed.size(0) 
 
         if local_batch_size != self.last_local_batch_size:
             self.labels = local_batch_size * utils.get_rank() + torch.arange(

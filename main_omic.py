@@ -40,6 +40,10 @@ from pdb import set_trace as st
 
 from sklearn.metrics import average_precision_score, f1_score, roc_auc_score, recall_score, confusion_matrix
 
+import open_clip
+
+from transformers import AutoTokenizer
+
 '''
 CUDA_VISIBLE_DEVICES=0 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/gene_GBMLGG_vis_adapter --input_size_path 224 --use_visual_adapter --batch_size 64 
 
@@ -62,8 +66,23 @@ CUDA_VISIBLE_DEVICES=0 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --out
 CUDA_VISIBLE_DEVICES=1 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/gene_GBMLGG_0719/vis_shallow_prompt --input_size_path 224 --train_bz 192  --test_bz 1500 --test_mode patch --tune_visual prompt 
 
 
+fine-tune
+CUDA_VISIBLE_DEVICES=1 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/gene_GBMLGG_0719/vis_fine-tune --input_size_path 224 --train_bz 1024  --test_bz 1500 --test_mode patch --tune_visual fine-tune 
+
+
+BioMedCLIP
+CUDA_VISIBLE_DEVICES=0 python main_omic.py --model ULIP_GENE_SNN_BiomedCLIP --lr 1e-3 --output_dir ./outputs/gene_GBMLGG_0719/fix_vis_biomedclip --input_size_path 224 --train_bz 96 --test_bz 1500 --test_mode patch --tune_visual none
+
+
+
 
 CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.launch --nproc_per_node=8 main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/gene_GBMLGG_0719/vis_prompt --input_size_path 224 --train_bz 1072  --test_bz 1500 --test_mode patch --tune_visual prompt 
+
+
+>> 0729
+CUDA_VISIBLE_DEVICES=0 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/gene_GBMLGG/fix_gene_ft_vis --input_size_path 224 --train_bz 128 --test_bz 256 --test_mode patch --tune_visual fine-tune --normalization data --text_mode sentence --fix_gene
+
+CUDA_VISIBLE_DEVICES=1 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/gene_GBMLGG/fix_gene_vis_adapter --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode sentence --fix_gene
 
 
 
@@ -294,8 +313,18 @@ def get_args_parser():
     parser.add_argument('--patience', default=0.005, type=float)
 
     parser.add_argument('--test_mode', type=str, default='full', choices=['full', 'patch'])
-    parser.add_argument('--tune_visual', type=str, default='none', choices=['none', 'adapter', 'shallow_prompt', 'deep_prompt'])
 
+    parser.add_argument('--tune_visual', type=str, default='none', choices=['none', 'fine-tune','adapter', 'shallow_prompt', 'deep_prompt'])
+
+    parser.add_argument('--normalization', type=str, default='data', choices=['clip', 'biomedclip', 'data'])
+
+    parser.add_argument('--ori_biomedclip', action = 'store_true')
+
+    parser.add_argument('--text_mode', type=str, default='sentence', choices=['sentence', 'description'])
+
+    parser.add_argument('--fix_gene', action='store_true', default=False)
+
+    
 
     return parser
 
@@ -321,6 +350,20 @@ def main(args):
         zero_stats = test_zeroshot_pathomic(args)
         print(zero_stats)
         return
+    
+    if 'biomed' in args.model.lower():
+
+        tokenizer =  open_clip.get_tokenizer('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224') 
+        biomedclip, preprocess_train, preprocess_val = open_clip.create_model_and_transforms('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224')
+
+    # elif 'mizero' in args.model.lower():
+    #     args.model_checkpoint = "/data/cxli/code/MI-Zero/src/checkpoint/ctranspath_448_bioclinicalbert/checkpoints/epoch_50.pt"
+    #     args.model_name = args.model_checkpoint.split('/')[-3]
+    #     tokenizer = load_pretrained_tokenizer(args.model_name)
+        # pass
+    else:
+        tokenizer = SimpleTokenizer()
+    args.tokenizer = tokenizer
 
     # create model
     print("=> creating model: {}".format(args.model))
@@ -385,48 +428,11 @@ def main(args):
 
     cudnn.benchmark = True
 
+
     # Data loading code
     print("=> creating dataset")
-    tokenizer = SimpleTokenizer()
-    # normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-    #                                  std=[0.229, 0.224, 0.225])
-    # train_transform = transforms.Compose([
-    #         transforms.RandomResizedCrop(224, scale=(0.5, 1.0)),
-    #         transforms.ToTensor(),
-    #         normalize
-    #     ])
 
-    # args.train_transform = train_transform
 
-    '''
-    2023/07/13
-
-    train_transform
-    Compose(
-        RandomResizedCrop(size=(224, 224), scale=(0.5, 1.0), ratio=(0.75, 1.3333), interpolation=bilinear)
-        ToTensor()
-        Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-
-    tokenizer
-    <utils.tokenizer.SimpleTokenizer object at 0x7f78d5b04450>
-    
-    args
-    Namespace(batch_size=64, betas=(0.9, 0.98), disable_amp=False, dist_backend='nccl', dist_url='env://', distributed=False, epochs=250, eps=1e-08, eval_freq=1, evaluate_3d=False, gpu=None, local_rank=0, lr=0.001, lr_end=1e-05, lr_start=1e-06, model='ULIP_GENE_SNN', npoints=8192, output_dir='./outputs/gene_GBMLGG', pretrain_dataset_name='shapenet', pretrain_dataset_prompt='shapenet_64', print_freq=10, rank=0, resume='', seed=0, start_epoch=0, test_ckpt_addr='', update_freq=1, use_height=False, validate_dataset_name='modelnet40', validate_dataset_prompt='modelnet40_64', wandb=False, warmup_epochs=1, wd=0.1, workers=10, world_size=1)
-    
-)
-    '''
-    '''
-    train_transform
-        Compose(
-        RandomResizedCrop(size=(224, 224), scale=(0.5, 1.0), ratio=(0.75, 1.3333), interpolation=bilinear)
-        ToTensor()
-        Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    tokenizer
-        <utils.tokenizer.SimpleTokenizer object at 0x7fbcb9502450>   
-)
-    '''
-    # train_dataset = get_dataset(train_transform, tokenizer, args, 'train')
-    # val_dataset = get_dataset(None, tokenizer, args, 'val')
 
     '''
     OMIC
@@ -467,8 +473,7 @@ def main(args):
 
     k = 1
     data = data_cv_splits[1] # 先只取单折, 进行debug调通
-    
-    args.tokenizer = tokenizer
+
 
     train_dataset, test_dataset, n_data = pathomic_dataset(args, data) 
     # len(train_dataset) = 1072, len(test_dataset) = 253
@@ -526,7 +531,7 @@ def main(args):
     val_loader = torch.utils.data.DataLoader(
         val_dataset, batch_size=args.test_bz, shuffle=False,
         num_workers=args.workers, pin_memory=True, sampler=val_sampler, drop_last=False)
-
+        # len(val_loader) = 5
 
     lr_schedule = utils.cosine_scheduler(args.lr, args.lr_end, args.epochs,
         len(train_loader) // args.update_freq, warmup_epochs=args.warmup_epochs, start_warmup_value=args.lr_start)
@@ -546,8 +551,8 @@ def main(args):
         Temp debug
         '''
         # val_stats = test_zeroshot_pathomic_core(val_loader, model, tokenizer, args)
-        
 
+        
         if args.distributed:
             train_sampler.set_epoch(epoch)
 
@@ -691,8 +696,8 @@ def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule,
 
         # clamp logit scale to [0, 100]
 
-        utils.get_model(model).logit_scale.data.clamp_(0, 4.6052)
-        logit_scale = utils.get_model(model).logit_scale.exp().item()
+        utils.get_model(model).logit_scale.data.clamp_(0, 4.6052) # 4.3307  |  4.4696
+        logit_scale = utils.get_model(model).logit_scale.exp().item() # 76.0 | 87
 
         for k in loss_dict:
             metrics[k].update(loss_dict[k].item(), args.train_bz)
@@ -770,24 +775,100 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
     # # caption = f'A pathology slide with WHO grading {grading_name[ int(single_g) ]} '
     # caption = f'WHO grading {grading_name[ int(single_g) ]}'
 
-    templates = ['A pathology slide with grade {} gliomas']
     labels = ['II', 'III', 'IV']
+    if args.text_mode == 'sentence':
+        templates = ['A pathology slide with grade {} gliomas'] 
+    if args.text_mode == 'description':
+
+        # caption_candidate = {
+        #     'A pathology slide with grade II gliomas':
+        #     [
+        #     "The cells tend to be relatively uniform in size and shape, and they may be arranged in a pattern that resembles the normal organization of tissue.",
+        #     "The cells have a relatively low rate of division (mitotic rate) and may be surrounded by normal brain tissue.",
+        #     "The tumor may have a well-defined border between the tumor and the surrounding tissue.",
+        #     'A pathology slide with grade II gliomas'
+        #     ],
+        #     'A pathology slide with grade III gliomas':
+        #     [
+        #     "The cells tend to be more variable in size and shape, and they may show signs of abnormal division (mitotic figures).",
+        #     "The cells may be arranged in a more irregular pattern and may infiltrate the surrounding brain tissue.",
+        #     "There may be areas of dead tissue (necrosis) within the tumor.",
+        #     'A pathology slide with grade III gliomas'
+        #     ],
+        #     'A pathology slide with grade IV gliomas':
+        #     [
+        #     'The cells tend to be highly abnormal in appearance and may be very variable in size and shape, with large, irregular nuclei.',
+        #     'There may be a high degree of mitotic activity, with many cells dividing rapidly.',
+        #     'The tumor may have a very irregular border and may infiltrate extensively into the surrounding tissue.',
+        #     'There may be areas of necrosis within the tumor.',
+        #     'A pathology slide with grade IV gliomas'
+        #     ]
+        # }
+
+        caption_candidate = {
+            'A pathology slide with grade II gliomas':
+            [
+            'Infiltrative growth pattern',
+            'Relatively uniform cells with round or oval nuclei and minimal pleomorphism',
+            'Low mitotic activity',
+            'Absence of microvascular proliferation',
+            'Absence of necrosis',
+            # 'A pathology slide with grade II gliomas'
+            ],
+
+            'A pathology slide with grade III gliomas':
+            [
+            # "Increased cellularity compared to grade II gliomas",
+            # "Mild to moderate nuclear atypia and pleomorphism.",
+            # "Higher mitotic activity compared to grade II gliomas.",
+            # "Absence or minimal microvascular proliferation.",
+            # "Absence or focal necrosis.",
+            "Increased cellularity",
+            "Mild to moderate nuclear atypia and pleomorphism.",
+            "Higher mitotic activity.",
+            "Absence or minimal microvascular proliferation.",
+            "Absence or focal necrosis.",
+            # 'A pathology slide with grade III gliomas'
+            ],
+
+            'A pathology slide with grade IV gliomas':
+            [
+            "Highly cellular and pleomorphic tumor cells",
+            "Marked nuclear atypia and pleomorphism.",
+            "High mitotic activity",
+            "Prominent microvascular proliferation",
+            "Presence of necrosis, often with pseudopalisading pattern (tumor cells surrounding necrotic areas).",
+            # 'A pathology slide with grade IV gliomas'
+            ]
+        }
 
 
     with torch.no_grad():
         text_features = []
-        for l in labels:
+        for id, l in enumerate(labels):
+            try:
+                templates = list(caption_candidate.values())[id]
+            except:
+                pass
+
             texts = [t.format(l) for t in templates]
-            texts = tokenizer(texts).cuda(args.gpu, non_blocking=True) # torch.Size([64, 77])
+            # if 'mizero' in args.model.lower():
+            #     texts, attention_mask = tokenize(tokenizer, texts) 
+            #     texts = torch.from_numpy(np.array(texts)).cuda(args.gpu, non_blocking=True)
+            #     attention_mask = torch.from_numpy(np.array(attention_mask)).cuda()
+            #     class_embeddings = utils.get_model(model).encode_text(texts, attention_mask=attention_mask)
+            # else: 
+            texts = tokenizer(texts).cuda(args.gpu, non_blocking=True) # torch.Size([1, 77]) # [3,77]
             if len(texts.shape) < 2:
                 texts = texts[None, ...]
 
-            class_embeddings = utils.get_model(model).encode_text(texts) # 调用SLIP
+            class_embeddings = utils.get_model(model).encode_text(texts) # 调用SLIP () | biomedCLIP (512)
+
             class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
             class_embeddings = class_embeddings.mean(dim=0)
             class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
             text_features.append(class_embeddings)
-        text_features = torch.stack(text_features, dim=0)
+        text_features = torch.stack(text_features, dim=0)  # 一样的  # 调用SLIP (3,512) | biomedCLIP (3,512)
 
         end = time.time()
         per_class_stats = collections.defaultdict(int)
@@ -802,11 +883,16 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
             # (pc, target, target_name)
             x_path_full, x_text , x_omic, single_e, single_t, single_g = inputs
 
-            target_name = x_text
+            # target_name = x_text
             target = single_g
 
-            for name in target_name:
+            target_name = []
+        
+            for g in single_g:
+                grade = ['II', 'III', 'IV'    ]
+                name = f'Grade {grade}'
                 per_class_stats[name] += 1
+                target_name.append(name)
 
             # pc = pc.cuda(args.gpu, non_blocking=True)
 
@@ -835,7 +921,7 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
 
                     x_path = x_path.cuda(args.gpu, non_blocking=True)
 
-                     # encode pathology
+                    # encode pathology
                     if sw_cnt == 0:
                         path_features = utils.get_model(model).encode_image(x_path)
                         path_features = path_features / path_features.norm(dim=-1, keepdim=True)
@@ -846,7 +932,9 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
                         path_features += _path_features
                     sw_cnt += 1
                 
-            path_features = path_features /sw_cnt
+            path_features = path_features /sw_cnt # 调用SLIP () | biomedCLIP (512,512)
+            logits_per_path=  path_features @ text_features.t()
+
 
             x_omic = x_omic.cuda(args.gpu, non_blocking=True)
             target = target.cuda(args.gpu, non_blocking=True)
@@ -855,16 +943,13 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
             # pc_features = utils.get_model(model).encode_pc(pc)
             # pc_features = pc_features / pc_features.norm(dim=-1, keepdim=True)
 
-           
+
             # encode geneomic
+            
             omic_features = utils.get_model(model).encode_omic(x_omic)
             omic_features = omic_features / omic_features.norm(dim=-1, keepdim=True)
-
-            # # cosine similarity as logits
-            # logits_per_pc = pc_features @ text_features.t()
-
-            logits_per_path=  path_features @ text_features.t()
             logits_per_omic=  omic_features @ text_features.t()
+            
 
             
             # logits_per_omic.mean()    -0.0023   -0.0023  0.0183  0.0330 0.0431
@@ -907,31 +992,33 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
             # top1.update(acc1.item(), x_omic.size(0))................
             # top5.update(acc5.item(), x_omic.size(0)).
 
+            
             omic_acc1, omic_correct = accuracy(logits_per_omic, target)
             omic_top1.update(omic_acc1[0].item(), x_omic.size(0))
-
             omic_rocauc.update(roc_auc_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_omic,-1).cpu().numpy(), average ='micro')*100)
-
             omic_ap.update(average_precision_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_omic,-1).cpu().numpy(), average='micro')*100)
+            
 
 
-            path_acc1, path_correct = accuracy(logits_per_path, target)
+            path_acc1, path_correct = accuracy(logits_per_path, target) # 加不加softmax都一样
             path_top1.update(path_acc1[0].item(), x_path.size(0))
 
-            path_rocauc.update(roc_auc_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_path,-1).cpu().numpy(), average ='micro')*100)
+            path_rocauc.update(roc_auc_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_path,-1).cpu().numpy(), average ='micro')*100) # 加完softmax会发生一定下降 (规律不明..)
 
-            path_ap.update(average_precision_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_path,-1).cpu().numpy(), average='micro')*100)
+            path_ap.update(average_precision_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_path,-1).cpu().numpy(), average='micro')*100) # 加完softmax会发生一定下降 (规律不明..)
 
+            
             prob_mm = (F.softmax(logits_per_omic,-1) + F.softmax(logits_per_path, -1)) / 2
-
             mm_acc1, mm_correct = accuracy(prob_mm, target)
             mm_top1.update(mm_acc1[0].item(), x_omic.size(0))
             mm_rocauc.update(roc_auc_score(np.eye(3)[target.cpu().numpy()], prob_mm.cpu().numpy(), average ='micro')*100)
             mm_ap.update(average_precision_score(np.eye(3)[target.cpu().numpy()], prob_mm.cpu().numpy(), average='micro')*100)
+            
 
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
+            
             
             if logits_per_omic.shape[0] > 1:
                 omic_top1_accurate = omic_correct[:1].squeeze()
@@ -941,6 +1028,7 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
                 omic_top1_accurate = omic_correct[:1][0]
                 path_top1_accurate = path_correct[:1][0]
                 mm_top1_accurate = mm_correct[:1][0]
+
             # top5_accurate = correct[:5].float().sum(0, keepdim=True).squeeze()
 
             for idx, name in enumerate(target_name):
@@ -955,7 +1043,7 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
 
             if i % args.print_freq == 0:
                 progress.display(i)
-
+            
         omic_top1_accuracy_per_class = {}
         path_top1_accuracy_per_class = {}
         mm_top1_accuracy_per_class = {}
@@ -1018,7 +1106,21 @@ def test_zeroshot_pathomic(args):
         model.load_state_dict(state_dict, strict=True)
         print("=> loaded resume checkpoint '{}'".format(args.test_ckpt_addr))
 
-    tokenizer = SimpleTokenizer()
+    # tokenizer = SimpleTokenizer()
+
+    if 'biomed' in args.model.lower():
+
+        tokenizer =  open_clip.get_tokenizer('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224') 
+        biomedclip, preprocess_train, preprocess_val = open_clip.create_model_and_transforms('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224')
+
+    elif 'mizero' in args.model.lower():
+        args.model_checkpoint = "/data/cxli/code/MI-Zero/src/checkpoint/ctranspath_448_bioclinicalbert/checkpoints/epoch_50.pt"
+        args.model_name = args.model_checkpoint.split('/')[-3]
+        tokenizer = load_pretrained_tokenizer(args.model_name)
+        # pass
+    else:
+        tokenizer = SimpleTokenizer()
+
 
     # test_dataset = get_dataset(None, tokenizer, args, 'val')
     # test_loader = torch.utils.data.DataLoader(
@@ -1138,6 +1240,15 @@ class ProgressMeter(object):
         fmt = '{:' + str(num_digits) + 'd}'
         return '[' + fmt + '/' + fmt.format(num_batches) + ']'
 
+def tokenize(tokenizer, texts):
+    tokens = tokenizer.batch_encode_plus(texts, 
+                                         max_length = 64,
+                                         add_special_tokens=True, # Add '[CLS]' and '[SEP]'
+                                         return_token_type_ids=False,
+                                         truncation = True,
+                                         padding = 'max_length',
+                                         return_attention_mask=True)
+    return tokens['input_ids'], tokens['attention_mask']
 
 def accuracy(output, target, topk=(1,)):
     """Computes the accuracy over the k top predictions for the specified values of k"""
@@ -1154,6 +1265,31 @@ def accuracy(output, target, topk=(1,)):
             correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         return res, correct
+
+
+def compute_accuracy(preds, labels, probs_all=None, grad_acc_test=None):
+    """
+    Compute the grading accuracy and return the predicted probs.
+    """
+    grade_pred = preds.argmax(dim=1, keepdim=True)
+    grad_acc_test += grade_pred.eq(labels.view_as(grade_pred)).sum().item()
+    probs_np = preds.detach().cpu().numpy()
+    probs_all = probs_np if probs_all is None else np.concatenate((probs_all, probs_np), axis=0)
+
+    return grad_acc_test, probs_all
+
+def load_pretrained_tokenizer(model_name):
+    if 'clinicalbert' in model_name:
+        model_name = 'emilyalsentzer/Bio_ClinicalBERT'
+        tokenizer = AutoTokenizer.from_pretrained(model_name, fast=True)
+    elif 'pubmed' in model_name:
+        model_name = 'microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext'
+        tokenizer = AutoTokenizer.from_pretrained(model_name, fast=True)
+    else:
+        raise NotImplementedError
+    
+    return tokenizer
+
 
 
 if __name__ == '__main__':

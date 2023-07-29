@@ -57,8 +57,8 @@ class SNN(nn.Module):
 
         if init_max: init_max_weights(self)
 
-        self.output_range = Parameter(torch.FloatTensor([6]), requires_grad=False)
-        self.output_shift = Parameter(torch.FloatTensor([-3]), requires_grad=False)
+        # self.output_range = Parameter(torch.FloatTensor([6]), requires_grad=False)
+        # self.output_shift = Parameter(torch.FloatTensor([-3]), requires_grad=False)
 
     def forward(self, **kwargs):
         x = kwargs['x_omic']

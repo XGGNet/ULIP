@@ -64,19 +64,35 @@
          3. ~~[] 调通并行模式...~~  >> 先不浪费时间; 往下做
          4. [X] 这里是比较粗暴的直接改了网络 只能用prompt; 后面可以改成可以参数选择是否需要Prompt 
             1. [X] 记录Deep prompt 结果
-            2. [] 记录Shallow prompt 结果
-   5. [] *Stronger CLIP backbone for pathology domain*
+            2. [X] 记录Shallow prompt 结果
+         5. [X] 直接fine-tune CLIP visual encoder的结果..
+   5. [] Stronger CLIP backbone for pathology domain
       1. [X] Study >> TOP priority: BiomedCLIP;  2nd priority: MI-Zero 
-      2. [] load BiomedCLIP
-      3. [] load MI-Zero
+      2. [X] load BiomedCLIP
+         1. [X] *比较一下 biomedclip 是否会比 slip 在病理上的zero-shot性能 好?* >> biomedclip 在病理图像上的zero-shot性能 和 SLIP 差不多...
+            1. [X] 测一下CLIP的病理ZS性能
+            2. [X] check normalization的问题; 现在都是用 pathology dataset的normalization, 试下用CLIP/SLIP自带的. >> 发现还是data自带的norm效果佳
+               1. ~~[] 为啥发现改了normalization, 基因的预测也会变...?~~
+                  1. ~~verify text_input, omic_input; text_features会不会变~~
+            3. [X] verify BiomedCLIP效果劣于SLIP
+               1. 确认下 official demo里使用biomedclip做zero-shot classification的范式 >> 两种版本的预测结果是一样的...
+               2. logit_scale对 ROC等的影响不大..
+      3. [X] *load MI-Zero* >> 搞不动了... 不调了..
+   
    6. [] class prompt ==> itemized descriptions
-      1. [] Stdudy FM
+      1. [X] Stdudy FM
       2. [] Coding
-   7. AC 和 AP / AUC 指标趋势不一致的问题
+         1. 把make_autopromptsv2.py用在基因图像数据上, 并且跑通
+      3. 先随便用个LLM输出下description..; 然后测下zero-shot性能
+         1. 
+   7. [X] AC 和 AP / AUC 指标趋势不一致的问题 >> 暂时找不出任何问题了... 先不浪费时间查这个issue了..
       1. 首先study排除函数的问题, 两边函数进行同样的输入, 看输出是否一致?
-
-
-
+      2. Finding: 加了softmax就会下降..
+         1. MICCA code 里的roc计算有无问题? >> 无问题..
+         2. accuracy计算? >> 无问题..
+   8. [X] 留个心眼
+      1.  normalization有点不一样 会不会有问题..
+      2.  Loss里, 只要不是成对数据就排斥...可以要是类别名是一样的情况怎么办? [已发邮件询问]
 
 
 
