@@ -107,10 +107,10 @@ class PathomicDataset(Dataset):
             label[label == 2] = 1
             self.g = label
 
-        # self.transforms = transforms.Compose([
-        #                     transforms.RandomCrop(opt.input_size_path),
-        #                     transforms.ToTensor(),
-        #                     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+        self.transforms = transforms.Compose([
+                            transforms.RandomCrop(opt.input_size_path),
+                            transforms.ToTensor(),
+                            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
         if opt.normalization == 'clip':
             normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],std=[0.229, 0.224, 0.225])
@@ -118,6 +118,13 @@ class PathomicDataset(Dataset):
             normalize = transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
         elif opt.normalization == 'data':
             normalize = transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+
+        from lavis.models import load_model_and_preprocess
+
+        device = torch.device("cuda") if torch.cuda.is_available() else "cpu"
+        model, vis_processors, text_processors = load_model_and_preprocess("blip2_image_text_matching", "pretrain", device=device, is_eval=True)
+
+        self.vis_processors = vis_processors
 
 
         self.train_transforms = transforms.Compose([
@@ -134,7 +141,7 @@ class PathomicDataset(Dataset):
         self.test_transforms = transforms.Compose([
                             transforms.ToTensor(),
                             # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-                            normalize
+                            # normalize
                                                  ])
 
     def __getitem__(self, index):
@@ -142,18 +149,19 @@ class PathomicDataset(Dataset):
         single_t = torch.tensor(self.t[index]).type(torch.FloatTensor)
         single_g = torch.tensor(self.g[index]).type(torch.LongTensor)
 
-        if self.mode == "path" or self.mode == 'pathpath':
-            single_X_path = Image.open(self.X_path[index]).convert('RGB')
-            # print(single_X_path, self.transforms(single_X_path).shape)
-            return (self.transforms(single_X_path), 0, 0, single_e, single_t, single_g)
-        elif self.mode == "omic" or self.mode == 'omicomic':
-            single_X_omic = torch.tensor(self.X_omic[index]).type(torch.FloatTensor)
-            return (0, 0, single_X_omic, single_e, single_t, single_g)
-        elif self.mode == "pathomic":
-            single_X_path = Image.open(self.X_path[index]).convert('RGB')
-            single_X_omic = torch.tensor(self.X_omic[index]).type(torch.FloatTensor)
-            # print(single_X_path, self.transforms(single_X_path).shape)
+        # if self.mode == "path" or self.mode == 'pathpath':
+        #     single_X_path = Image.open(self.X_path[index]).convert('RGB')
+        #     # print(single_X_path, self.transforms(single_X_path).shape)
+        #     return (self.transforms(single_X_path), 0, 0, single_e, single_t, single_g)
+        # elif self.mode == "omic" or self.mode == 'omicomic':
+        #     single_X_omic = torch.tensor(self.X_omic[index]).type(torch.FloatTensor)
+        #     return (0, 0, single_X_omic, single_e, single_t, single_g)
+        # elif self.mode == "pathomic":
+        #     single_X_path = Image.open(self.X_path[index]).convert('RGB')
+        #     single_X_omic = torch.tensor(self.X_omic[index]).type(torch.FloatTensor)
 
+        single_X_path = Image.open(self.X_path[index]).convert('RGB')
+        single_X_omic = torch.tensor(self.X_omic[index]).type(torch.FloatTensor)
 
         if self.opt.text_mode == 'sentence':
             grading_name = {0: 'II', 1: 'III', 2: 'IV'}
@@ -183,16 +191,16 @@ class PathomicDataset(Dataset):
                 ]
             }
             caption = list(caption_candidate.values())[int(single_g)]
-            
 
-            
-            
+        
+    
         # tokenized_captions.append(self.tokenizer(caption))
         # tokenized_captions = torch.stack(tokenized_captions) 
         if self.split == 'train':
             return (self.train_transforms(single_X_path), caption , single_X_omic, single_e, single_t, single_g)
         elif self.split == 'test':
-            return (self.test_transforms(single_X_path), caption, single_X_omic, single_e, single_t, single_g)
+            # return (self.test_transforms(single_X_path), caption, single_X_omic, single_e, single_t, single_g)
+            return (self.vis_processors['eval'](single_X_path), caption, single_X_omic, single_e, single_t, single_g)
 
     def __len__(self):
         return len(self.X_path)

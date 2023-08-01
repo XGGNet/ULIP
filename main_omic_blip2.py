@@ -44,6 +44,10 @@ import open_clip
 
 from transformers import AutoTokenizer
 
+from tqdm import tqdm
+
+import statistics
+
 '''
 CUDA_VISIBLE_DEVICES=0 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/gene_GBMLGG_vis_adapter --input_size_path 224 --use_visual_adapter --batch_size 64 
 
@@ -351,10 +355,10 @@ def main(args):
         print(zero_stats)
         return
     
-    if 'biomed' in args.model.lower():
+    # if 'biomed' in args.model.lower():
 
-        tokenizer =  open_clip.get_tokenizer('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224') 
-        biomedclip, preprocess_train, preprocess_val = open_clip.create_model_and_transforms('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224')
+    #     tokenizer =  open_clip.get_tokenizer('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224') 
+    #     biomedclip, preprocess_train, preprocess_val = open_clip.create_model_and_transforms('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224')
 
     # elif 'mizero' in args.model.lower():
     #     args.model_checkpoint = "/data/cxli/code/MI-Zero/src/checkpoint/ctranspath_448_bioclinicalbert/checkpoints/epoch_50.pt"
@@ -770,7 +774,7 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
     #     prefix='Test: ')
 
     # switch to evaluate mode
-    model.eval()
+    # model.eval()
 
     # print('=> encoding captions')
     # with open(os.path.join("./data", 'templates.json')) as f:
@@ -912,7 +916,23 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
         
         # per_class_correct_top5 = collections.defaultdict(int)
 
-        for i, inputs in enumerate(test_loader):
+        record_itm = {'grade2':[[],[],[],[],[]], 'grade3':[[],[],[],[],[]], 'grade4':[[],[],[],[],[]]}
+        record_itc =  {'grade2':[[],[],[],[],[]], 'grade3':[[],[],[],[],[]], 'grade4':[[],[],[],[],[]]}
+
+        mean_itm = {'grade2':[0,0,0,0,0], 'grade3':[0,0,0,0,0], 'grade4':[0,0,0,0,0]}
+        mean_itc = {'grade2':[0,0,0,0,0], 'grade3':[0,0,0,0,0], 'grade4':[0,0,0,0,0]}
+
+        std_itm = {'grade2':[0,0,0,0,0], 'grade3':[0,0,0,0,0], 'grade4':[0,0,0,0,0]}
+        std_itc = {'grade2':[0,0,0,0,0], 'grade3':[0,0,0,0,0], 'grade4':[0,0,0,0,0]}
+
+        range_itm = {'grade2':[[0,0],[0,0],[0,0],[0,0],[0,0]], 'grade3':[[0,0],[0,0],[0,0],[0,0],[0,0]], 'grade4':[[0,0],[0,0],[0,0],[0,0],[0,0]]}
+        range_itc = {'grade2':[[0,0],[0,0],[0,0],[0,0],[0,0]], 'grade3':[[0,0],[0,0],[0,0],[0,0],[0,0]], 'grade4':[[0,0],[0,0],[0,0],[0,0],[0,0]]}
+
+        cnt0 = 0
+        cnt1 = 0
+        cnt2 = 0
+        
+        for i, inputs in tqdm(enumerate(test_loader)):
             # (pc, target, target_name)
             x_path_full, x_text , x_omic, single_e, single_t, single_g = inputs
 
@@ -929,48 +949,119 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
 
             # pc = pc.cuda(args.gpu, non_blocking=True)
 
-            sw_cnt = 0
-            temp_record = 0
-            for h in range(0, x_path_full.shape[-2], args.input_size_path):
-                for w in range(0, x_path_full.shape[-1], args.input_size_path):
+            # sw_cnt = 0
+            # # temp_record = 0
+            # for h in range(0, x_path_full.shape[-2], args.input_size_path):
+            #     for w in range(0, x_path_full.shape[-1], args.input_size_path):
 
-                    if h+args.input_size_path <= x_path_full.shape[-2]:
-                        h_start = h
-                        h_end = h+args.input_size_path
-                    else:
-                        h_start = x_path_full.shape[-2] - args.input_size_path
-                        h_end = x_path_full.shape[-2]
+            #         if h+args.input_size_path <= x_path_full.shape[-2]:
+            #             h_start = h
+            #             h_end = h+args.input_size_path
+            #         else:
+            #             h_start = x_path_full.shape[-2] - args.input_size_path
+            #             h_end = x_path_full.shape[-2]
                     
-                    if w+args.input_size_path <= x_path_full.shape[-1]:
-                        w_start = w
-                        w_end = w+args.input_size_path
-                    else:
-                        w_start = x_path_full.shape[-1] - args.input_size_path
-                        w_end = x_path_full.shape[-1]
+            #         if w+args.input_size_path <= x_path_full.shape[-1]:
+            #             w_start = w
+            #             w_end = w+args.input_size_path
+            #         else:
+            #             w_start = x_path_full.shape[-1] - args.input_size_path
+            #             w_end = x_path_full.shape[-1]
                         
                     
-                    x_path = x_path_full[:, :, h_start:h_end, w_start:w_end]
-                    temp_record += x_path.sum()
+            #         x_path = x_path_full[:, :, h_start:h_end, w_start:w_end]
+                    # temp_record += x_path.sum()
 
-                    x_path = x_path.cuda(args.gpu, non_blocking=True)
 
-                    # encode pathology
-                    if sw_cnt == 0:
-                        path_features = utils.get_model(model).encode_image(x_path)
-                        path_features = path_features / path_features.norm(dim=-1, keepdim=True)
-                    else:
-                        _path_features = utils.get_model(model).encode_image(x_path)
-                        _path_features = _path_features / _path_features.norm(dim=-1, keepdim=True)
-
-                        path_features += _path_features
-                    sw_cnt += 1
+                    # x_path = x_path.cuda(args.gpu, non_blocking=True)
                 
-            path_features = path_features /sw_cnt # 调用SLIP () | biomedCLIP (512,512)
-            logits_per_path=  path_features @ text_features.t()
+                    # encode pathology
+                    # if sw_cnt == 0:
+                    #     path_features = utils.get_model(model).encode_image(x_path)
+                    #     path_features = path_features / path_features.norm(dim=-1, keepdim=True)
+                    # else:
+                    #     _path_features = utils.get_model(model).encode_image(x_path)
+                    #     _path_features = _path_features / _path_features.norm(dim=-1, keepdim=True)
+
+                    #     path_features += _path_features
+
+                    # img =  x_path
+                    # for txt in texts:
+                    #     itm_output = model({"image": img, "text_input": txt}, match_head="itm")
+                    #     itm_scores = torch.nn.functional.softmax(itm_output, dim=1)
+                    #     print(f'The image and text are matched with a probability of {itm_scores[:, 1].item():.3%}')
+
+                    #     itc_score = model({"image": img, "text_input": txt}, match_head='itc')
+                    #     print('The image feature and text feature has a cosine similarity of %.4f'%itc_score)
+
+                    
+
+                    # sw_cnt += 1
+                
+            # path_features = path_features /sw_cnt # 调用SLIP () | biomedCLIP (512,512)
+            # logits_per_path=  path_features @ text_features.t()
+
+            '''
+            下一步可以用patch-wise inference
+            
+            '''
+
+            imgs =  x_path_full.cuda(args.gpu, non_blocking=True)
+            for ind_img, img in enumerate(imgs):
+                img = img.unsqueeze(0)
+                gt =  single_g[ind_img]
+                keys = list( record_itm.keys() )
+
+                if gt == 0 and cnt0>5:
+                    continue
+                elif gt == 1 and cnt1>5:
+                    continue
+                elif gt == 2 and cnt2>5:
+                    continue
 
 
-            x_omic = x_omic.cuda(args.gpu, non_blocking=True)
-            target = target.cuda(args.gpu, non_blocking=True)
+                for ind_txt, txt in enumerate(texts):
+                    itm_output = model({"image": img, "text_input": txt}, match_head="itm")
+                    itm_scores = torch.nn.functional.softmax(itm_output, dim=1)
+                    itm_score = itm_scores[:,1].item()
+                    # print(f'The image and text are matched with a probability of {itm_scores[:, 1].item():.3%}')
+
+                    itc_score = model({"image": img, "text_input": txt}, match_head='itc').item()
+                    # print('The image feature and text feature has a cosine similarity of %.4f'%itc_score)
+
+                    record_itm[keys[gt]][ind_txt].append(itm_score)
+                    record_itc[keys[gt]][ind_txt].append(itc_score)
+
+                    pass
+                
+                if gt == 0:
+                    cnt0 += 1
+                elif gt == 1:
+                    cnt1 += 1
+                elif gt == 2:
+                    cnt2 += 1
+
+                
+        
+        for key, value in record_itm.items():
+            for ind in range(len(record_itm[key])):
+                mean_itm[key][ind] = sum(record_itm[key][ind]) / len(record_itm[key][ind])
+                mean_itc[key][ind] = sum(record_itc[key][ind]) / len(record_itc[key][ind])
+                
+                std_itm[key][ind] = statistics.stdev(record_itm[key][ind])
+                std_itc[key][ind] = statistics.stdev(record_itc[key][ind])
+
+                range_itm[key][ind][0] =  mean_itm[key][ind] - std_itm[key][ind]
+                range_itm[key][ind][1] =  mean_itm[key][ind] + std_itm[key][ind]
+
+                range_itc[key][ind][0] =  mean_itc[key][ind] - std_itc[key][ind]
+                range_itc[key][ind][1] =  mean_itc[key][ind] + std_itc[key][ind]
+
+
+        print('a')
+
+            # x_omic = x_omic.cuda(args.gpu, non_blocking=True)
+            # target = target.cuda(args.gpu, non_blocking=True)
 
             # # encode pc
             # pc_features = utils.get_model(model).encode_pc(pc)
@@ -979,9 +1070,9 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
 
             # encode geneomic
             
-            omic_features = utils.get_model(model).encode_omic(x_omic)
-            omic_features = omic_features / omic_features.norm(dim=-1, keepdim=True)
-            logits_per_omic=  omic_features @ text_features.t()
+            # omic_features = utils.get_model(model).encode_omic(x_omic)
+            # omic_features = omic_features / omic_features.norm(dim=-1, keepdim=True)
+            # logits_per_omic=  omic_features @ text_features.t()
             
 
             
@@ -1026,56 +1117,56 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
             # top5.update(acc5.item(), x_omic.size(0)).
 
             
-            omic_acc1, omic_correct = accuracy(logits_per_omic, target)
-            omic_top1.update(omic_acc1[0].item(), x_omic.size(0))
-            omic_rocauc.update(roc_auc_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_omic,-1).cpu().numpy(), average ='micro')*100)
-            omic_ap.update(average_precision_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_omic,-1).cpu().numpy(), average='micro')*100)
+            # omic_acc1, omic_correct = accuracy(logits_per_omic, target)
+            # omic_top1.update(omic_acc1[0].item(), x_omic.size(0))
+            # omic_rocauc.update(roc_auc_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_omic,-1).cpu().numpy(), average ='micro')*100)
+            # omic_ap.update(average_precision_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_omic,-1).cpu().numpy(), average='micro')*100)
             
 
 
-            path_acc1, path_correct = accuracy(logits_per_path, target) # 加不加softmax都一样
-            path_top1.update(path_acc1[0].item(), x_path.size(0))
+            # path_acc1, path_correct = accuracy(logits_per_path, target) # 加不加softmax都一样
+            # path_top1.update(path_acc1[0].item(), x_path.size(0))
 
-            path_rocauc.update(roc_auc_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_path,-1).cpu().numpy(), average ='micro')*100) # 加完softmax会发生一定下降 (规律不明..)
+            # path_rocauc.update(roc_auc_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_path,-1).cpu().numpy(), average ='micro')*100) # 加完softmax会发生一定下降 (规律不明..)
 
-            path_ap.update(average_precision_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_path,-1).cpu().numpy(), average='micro')*100) # 加完softmax会发生一定下降 (规律不明..)
+            # path_ap.update(average_precision_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_path,-1).cpu().numpy(), average='micro')*100) # 加完softmax会发生一定下降 (规律不明..)
 
             
-            prob_mm = (F.softmax(logits_per_omic,-1) + F.softmax(logits_per_path, -1)) / 2
-            mm_acc1, mm_correct = accuracy(prob_mm, target)
-            mm_top1.update(mm_acc1[0].item(), x_omic.size(0))
-            mm_rocauc.update(roc_auc_score(np.eye(3)[target.cpu().numpy()], prob_mm.cpu().numpy(), average ='micro')*100)
-            mm_ap.update(average_precision_score(np.eye(3)[target.cpu().numpy()], prob_mm.cpu().numpy(), average='micro')*100)
+            # prob_mm = (F.softmax(logits_per_omic,-1) + F.softmax(logits_per_path, -1)) / 2
+            # mm_acc1, mm_correct = accuracy(prob_mm, target)
+            # mm_top1.update(mm_acc1[0].item(), x_omic.size(0))
+            # mm_rocauc.update(roc_auc_score(np.eye(3)[target.cpu().numpy()], prob_mm.cpu().numpy(), average ='micro')*100)
+            # mm_ap.update(average_precision_score(np.eye(3)[target.cpu().numpy()], prob_mm.cpu().numpy(), average='micro')*100)
             
 
-            # measure elapsed time
-            batch_time.update(time.time() - end)
-            end = time.time()
+            # # measure elapsed time
+            # batch_time.update(time.time() - end)
+            # end = time.time()
             
             
-            if logits_per_omic.shape[0] > 1:
-                omic_top1_accurate = omic_correct[:1].squeeze()
-                path_top1_accurate = path_correct[:1].squeeze()
-                mm_top1_accurate = mm_correct[:1].squeeze()
-            else:
-                omic_top1_accurate = omic_correct[:1][0]
-                path_top1_accurate = path_correct[:1][0]
-                mm_top1_accurate = mm_correct[:1][0]
+            # if logits_per_omic.shape[0] > 1:
+            #     omic_top1_accurate = omic_correct[:1].squeeze()
+            #     path_top1_accurate = path_correct[:1].squeeze()
+            #     mm_top1_accurate = mm_correct[:1].squeeze()
+            # else:
+            #     omic_top1_accurate = omic_correct[:1][0]
+            #     path_top1_accurate = path_correct[:1][0]
+            #     mm_top1_accurate = mm_correct[:1][0]
 
             # top5_accurate = correct[:5].float().sum(0, keepdim=True).squeeze()
 
-            for idx, name in enumerate(target_name):
-                if omic_top1_accurate[idx].item():
-                    omic_per_class_correct_top1[name] += 1
-                if path_top1_accurate[idx].item():
-                    path_per_class_correct_top1[name] += 1
-                if mm_top1_accurate[idx].item():
-                    mm_per_class_correct_top1[name] += 1
-                # if top5_accurate[idx].item():
-                #     per_class_correct_top5[name] += 1
+            # for idx, name in enumerate(target_name):
+            #     if omic_top1_accurate[idx].item():
+            #         omic_per_class_correct_top1[name] += 1
+            #     if path_top1_accurate[idx].item():
+            #         path_per_class_correct_top1[name] += 1
+            #     if mm_top1_accurate[idx].item():
+            #         mm_per_class_correct_top1[name] += 1
+            #     # if top5_accurate[idx].item():
+            #     #     per_class_correct_top5[name] += 1
 
-            if i % args.print_freq == 0:
-                progress.display(i)
+            # if i % args.print_freq == 0:
+            #     progress.display(i)
             
         omic_top1_accuracy_per_class = {}
         path_top1_accuracy_per_class = {}
@@ -1120,39 +1211,40 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
 ZERO-SHOT classification
 '''
 def test_zeroshot_pathomic(args):
-    ckpt = torch.load(args.test_ckpt_addr, map_location='cpu')
-    state_dict = OrderedDict()
-    for k, v in ckpt['state_dict'].items():
-        state_dict[k.replace('module.', '')] = v
+    # ckpt = torch.load(args.test_ckpt_addr, map_location='cpu')
+    # state_dict = OrderedDict()
+    # for k, v in ckpt['state_dict'].items():
+    #     state_dict[k.replace('module.', '')] = v
 
-    # create model
-    old_args = ckpt['args']
-    print("=> creating model: {}".format(old_args.model))
-    try: # enter here
-        model = getattr(models, old_args.model)(args=args)
-        model.cuda()
-        model.load_state_dict(state_dict, strict=True)
-        print("=> loaded resume checkpoint '{}'".format(args.test_ckpt_addr))
-    except:
-        model = getattr(models, args.model)(args=args)
-        model.cuda()
-        model.load_state_dict(state_dict, strict=True)
-        print("=> loaded resume checkpoint '{}'".format(args.test_ckpt_addr))
+    # # create model
+    # old_args = ckpt['args']
+    # print("=> creating model: {}".format(old_args.model))
+    # try: # enter here
+    #     model = getattr(models, old_args.model)(args=args)
+    #     model.cuda()
+    #     model.load_state_dict(state_dict, strict=True)
+    #     print("=> loaded resume checkpoint '{}'".format(args.test_ckpt_addr))
+    # except:
+    #     model = getattr(models, args.model)(args=args)
+    #     model.cuda()
+    #     model.load_state_dict(state_dict, strict=True)
+    #     print("=> loaded resume checkpoint '{}'".format(args.test_ckpt_addr))
 
-    # tokenizer = SimpleTokenizer()
+    # # tokenizer = SimpleTokenizer()
 
-    if 'biomed' in args.model.lower():
+    # if 'biomed' in args.model.lower():
 
-        tokenizer =  open_clip.get_tokenizer('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224') 
-        biomedclip, preprocess_train, preprocess_val = open_clip.create_model_and_transforms('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224')
+    #     tokenizer =  open_clip.get_tokenizer('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224') 
+    #     biomedclip, preprocess_train, preprocess_val = open_clip.create_model_and_transforms('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224')
 
-    elif 'mizero' in args.model.lower():
-        args.model_checkpoint = "/data/cxli/code/MI-Zero/src/checkpoint/ctranspath_448_bioclinicalbert/checkpoints/epoch_50.pt"
-        args.model_name = args.model_checkpoint.split('/')[-3]
-        tokenizer = load_pretrained_tokenizer(args.model_name)
-        # pass
-    else:
-        tokenizer = SimpleTokenizer()
+    # elif 'mizero' in args.model.lower():
+    #     args.model_checkpoint = "/data/cxli/code/MI-Zero/src/checkpoint/ctranspath_448_bioclinicalbert/checkpoints/epoch_50.pt"
+    #     args.model_name = args.model_checkpoint.split('/')[-3]
+    #     tokenizer = load_pretrained_tokenizer(args.model_name)
+    #     # pass
+    # else:
+    
+    tokenizer = SimpleTokenizer()
 
 
     # test_dataset = get_dataset(None, tokenizer, args, 'val')
@@ -1213,6 +1305,8 @@ def test_zeroshot_pathomic(args):
         val_dataset, batch_size=args.test_bz, shuffle=False,
         num_workers=args.workers, pin_memory=True, sampler=None, drop_last=False
     )
+
+    model = None
     results = test_zeroshot_pathomic_core(test_loader, model, tokenizer, args)
 
     return results

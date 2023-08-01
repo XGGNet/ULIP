@@ -94,6 +94,9 @@
       1.  normalization有点不一样 会不会有问题..
       2.  Loss里, 只要不是成对数据就排斥...可以要是类别名是一样的情况怎么办? [已发邮件询问]
 
+1. 基于BLIP2 text-image matching的zero-shot方式
+   1. baseline - 统计val_set里三个类别的数据, 在这些问题上的得分的均值和标准差
+
 
 
 
