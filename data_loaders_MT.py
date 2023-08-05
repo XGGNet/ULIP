@@ -354,7 +354,8 @@ class Pathomic_InstanceSample(Dataset):
                 raise NotImplementedError(self.pos_mode)
 
             replace = True if self.k > len(self.cls_negative[single_g]) else False
-            neg_idx = np.random.choice(self.cls_negative[single_g], self.k, replace=replace)
+            # neg_idx = np.random.choice(self.cls_negative[single_g], self.k, replace=replace)
+            neg_idx = np.zeros(700)
 
             '''
             Caption for grading

@@ -71,6 +71,9 @@ class GeneLIPWithImageLoss(nn.Module):
         self.last_local_batch_size = None
 
         self.tune_visual = args.tune_visual
+        self.wo_gene = args.wo_gene
+
+        self.args = args
 
         if self.tune_visual.lower() != 'none':
             print('## Perform visual tuning')
@@ -79,6 +82,8 @@ class GeneLIPWithImageLoss(nn.Module):
 
 
     def forward(self, outputs):
+
+
         omic_embed = outputs['omic_embed']
         text_embed = outputs['text_embed']
         image_embed = outputs['image_embed']
@@ -90,6 +95,7 @@ class GeneLIPWithImageLoss(nn.Module):
                 local_batch_size, device=omic_embed.device
             )
             self.last_local_batch_size = local_batch_size
+        # labels: 0~1072
 
         # normalized features
         omic_embed = F.normalize(omic_embed, dim=-1, p=2)
@@ -109,6 +115,8 @@ class GeneLIPWithImageLoss(nn.Module):
         logits_per_image_text = logit_scale * image_embed @ text_embed_all.t()
         logits_per_text_image = logit_scale * text_embed @ image_embed_all.t()
 
+        #   [1072, 1072]
+
 
         # label is the sample index in the batch
         # the first term is the contrastive loss between gene and text
@@ -120,12 +128,31 @@ class GeneLIPWithImageLoss(nn.Module):
         # loss = (F.cross_entropy(logits_per_omic_image, self.labels) +  F.cross_entropy(logits_per_text_pc, self.labels)) / 2 + \
         #     (F.cross_entropy(logits_per_omic_image, self.labels) + F.cross_entropy(logits_per_image_pc, self.labels)) / 2
 
+        if self.args.half_label_and_pair:
+            assert logits_per_omic_text.shape[0]==1072
 
-        loss = (F.cross_entropy(logits_per_omic_text, self.labels) +  F.cross_entropy(logits_per_text_omic, self.labels)) / 2 + \
-            (F.cross_entropy(logits_per_omic_image, self.labels) + F.cross_entropy(logits_per_image_omic, self.labels)) / 2
+            bz = len(logits_per_omic_text)
+            loss = (F.cross_entropy(logits_per_omic_text[:bz//2], self.labels[:bz//2]) +  F.cross_entropy(logits_per_text_omic[:bz//2], self.labels[:bz//2])) / 2 + \
+                    (F.cross_entropy(logits_per_omic_image[:bz//2], self.labels[:bz//2]) + F.cross_entropy(logits_per_image_omic[:bz//2], self.labels[:bz//2])) / 2
+            
+            if self.wo_gene:
+                loss = loss* 0.0
+            
+            if self.tune_visual.lower() != 'none':
+                loss += ( F.cross_entropy(logits_per_image_text[:bz//2], self.labels[:bz//2]) + F.cross_entropy(logits_per_text_image[:bz//2], self.labels[:bz//2]) ) / 2
+
+            loss += (F.cross_entropy(logits_per_omic_image[bz//2:], self.labels[bz//2:]) + F.cross_entropy(logits_per_image_omic[bz//2:], self.labels[bz//2:])) / 2
         
-        if self.tune_visual.lower() != 'none':
-            loss += ( F.cross_entropy(logits_per_image_text, self.labels) + F.cross_entropy(logits_per_text_image, self.labels) ) / 2
+        else:
+            
+            loss = (F.cross_entropy(logits_per_omic_text, self.labels) +  F.cross_entropy(logits_per_text_omic, self.labels)) / 2 + \
+                    (F.cross_entropy(logits_per_omic_image, self.labels) + F.cross_entropy(logits_per_image_omic, self.labels)) / 2
+            
+            if self.wo_gene:
+                loss = loss* 0.0
+            
+            if self.tune_visual.lower() != 'none':
+                loss += ( F.cross_entropy(logits_per_image_text, self.labels) + F.cross_entropy(logits_per_text_image, self.labels) ) / 2
 
         # compute accuracy
         with torch.no_grad():

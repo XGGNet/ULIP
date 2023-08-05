@@ -143,7 +143,7 @@ class GeneLIP_WITH_IMAGE(nn.Module):
         return x
 
     def encode_text(self, text):
-        x = self.token_embedding(text)  # [batch_size, n_ctx, d_model]
+        x = self.token_embedding(text)  # [batch_size, n_ctx, d_model]   torch.Size([5, 77, 512])
         x = x + self.positional_embedding
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x)
@@ -835,7 +835,7 @@ def ULIP_GENE_SNN(args):
             param.data.copy_(param_new)
 
         for name, param in model.named_parameters():
-            if args.fix_gene and 'gene' in name:
+            if (args.fix_gene or args.wo_gene) and 'gene' in name:
                 param.requires_grad = False
 
             if param.requires_grad:

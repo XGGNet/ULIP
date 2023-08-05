@@ -84,6 +84,39 @@ CUDA_VISIBLE_DEVICES=0 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --out
 
 CUDA_VISIBLE_DEVICES=1 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/gene_GBMLGG/fix_gene_vis_adapter --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode sentence --fix_gene
 
+>>0803
+
+CUDA_VISIBLE_DEVICES=0 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/0803/gene_GBMLGG_fulldata/vis_adapter --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode sentence 
+
+CUDA_VISIBLE_DEVICES=1 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/0803/gene_GBMLGG_fulldata/vis_adapter_fixgene --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode sentence --fix_gene 
+
+CUDA_VISIBLE_DEVICES=2 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/0803/gene_GBMLGG_fulldata/vis_adapter_wogene --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode sentence --wo_gene 
+
+
+CUDA_VISIBLE_DEVICES=3 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/0803/gene_GBMLGG_0.5data/vis_adapter --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode sentence --used_train_data_ratio 0.5
+
+CUDA_VISIBLE_DEVICES=4 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/0803/gene_GBMLGG_0.5data/vis_adapter_fixgene --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode sentence --fix_gene --used_train_data_ratio 0.5
+
+CUDA_VISIBLE_DEVICES=5 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/0803/gene_GBMLGG_0.5data/vis_adapter_wogene --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode sentence --wo_gene --used_train_data_ratio 0.5
+
+
+
+CUDA_VISIBLE_DEVICES=3 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/0803/gene_GBMLGG_0.5data_label_and_pair/vis_adapter --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode sentence
+
+
+CUDA_VISIBLE_DEVICES=4 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/0803/gene_GBMLGG_0.5data_label_and_pair/vis_adapter_wogene --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode sentence --wo_gene 
+
+
+
+
+CUDA_VISIBLE_DEVICES=0 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/0803/gene_GBMLGG_0.5data/vis_adapter --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode sentence --used_train_data_ratio 0.1
+
+CUDA_VISIBLE_DEVICES=1 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/0803/gene_GBMLGG_0.5data/vis_adapter_fixgene --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode sentence --fix_gene --used_train_data_ratio 0.1
+
+CUDA_VISIBLE_DEVICES=2 python main_omic.py --model ULIP_GENE_SNN --lr 1e-3 --output_dir ./outputs/0803/gene_GBMLGG_0.5data/vis_adapter_wogene --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode sentence --wo_gene --used_train_data_ratio 0.1
+
+
+
 
 
 '''
@@ -323,6 +356,11 @@ def get_args_parser():
     parser.add_argument('--text_mode', type=str, default='sentence', choices=['sentence', 'description'])
 
     parser.add_argument('--fix_gene', action='store_true', default=False)
+    parser.add_argument('--wo_gene', action='store_true', default=False)
+
+    parser.add_argument('--used_train_data_ratio', type=float, default=1.0)
+
+    parser.add_argument('--half_label_and_pair', action='store_true', default=False)
 
     
 
@@ -474,6 +512,10 @@ def main(args):
     k = 1
     data = data_cv_splits[1] # 先只取单折, 进行debug调通
 
+    if args.used_train_data_ratio<1:
+        for key, value in data['train'].items():
+            data['train'][key] = value[:int(len(value)*args.used_train_data_ratio)]
+
 
     train_dataset, test_dataset, n_data = pathomic_dataset(args, data) 
     # len(train_dataset) = 1072, len(test_dataset) = 253
@@ -481,6 +523,10 @@ def main(args):
     test_patches_dataset = pathomic_patches_dataset(args, data_patches)
     # len(test_patches_dataset) = 2277
 
+    if args.train_bz > len(train_dataset):
+        args.train_bz = len(train_dataset)
+    if args.test_bz > len(test_dataset):
+        args.test_bz = len(test_dataset)
 
     '''
     Temporary comments for debug
@@ -550,7 +596,13 @@ def main(args):
         '''
         Temp debug
         '''
-        # val_stats = test_zeroshot_pathomic_core(val_loader, model, tokenizer, args)
+        # if epoch == args.start_epoch:
+        # val_stats = test_zeroshot_pathomic_core(val_loader, model, tokenizer, args) 
+
+        '''
+        text_mode = description的时候, train里可能会报错..
+        跑的
+        '''
 
         
         if args.distributed:
@@ -657,7 +709,8 @@ def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule,
         # image = inputs[4] #[3,224,224]
         (x_path, x_texts, x_omic, censor, survtime, grade, index, sample_idx) = inputs 
 
-        inputs = [x_omic, x_texts, x_path]
+        inputs = [x_omic, x_texts, x_path] # torch.Size([1072, 1, 3, 77])  # torch.Size([1072, 1, 3, 77])
+
 
         inputs = [tensor.cuda(args.gpu, non_blocking=True) for tensor in inputs]
 
@@ -813,6 +866,7 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
             'Low mitotic activity',
             'Absence of microvascular proliferation',
             'Absence of necrosis',
+
             # 'A pathology slide with grade II gliomas'
             ],
 
@@ -828,6 +882,7 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
             "Higher mitotic activity.",
             "Absence or minimal microvascular proliferation.",
             "Absence or focal necrosis.",
+
             # 'A pathology slide with grade III gliomas'
             ],
 
@@ -838,6 +893,7 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
             "High mitotic activity",
             "Prominent microvascular proliferation",
             "Presence of necrosis, often with pseudopalisading pattern (tumor cells surrounding necrotic areas).",
+
             # 'A pathology slide with grade IV gliomas'
             ]
         }

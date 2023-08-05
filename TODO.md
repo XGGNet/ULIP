@@ -95,6 +95,19 @@
       2.  Loss里, 只要不是成对数据就排斥...可以要是类别名是一样的情况怎么办? [已发邮件询问]
 
 
+## 0803 ##
+- {EXP} full data + multi-modal + visual adapter
+- {EXP} full data + multi-modal + visual adapter + fix gene
+- {EXP} full data + multi-modal + visual adapter + w/o gene
+
+- {EXP} 50% data + multi-modal + visual adapter
+- {EXP} 50% data + multi-modal + visual adapter + fix gene
+- {EXP} 50$ data + multi-modal + visual adapter + w/o gene
+
+- {EXP} 50% sup data + 50% paired data + multi-modal + visual adapter
+  - Note: 前50% train data 保留标注, 后50% 只保留和基因的匹配关系
+- {EXP} 50% sup data + 50% paried data + multi-modal + visual adapter + fix gene
+
 
 
 # 眼底基因+ULIP
