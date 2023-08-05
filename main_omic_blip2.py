@@ -794,10 +794,10 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
     # # caption = f'A pathology slide with WHO grading {grading_name[ int(single_g) ]} '
     # caption = f'WHO grading {grading_name[ int(single_g) ]}'
 
-    # labels = ['II', 'III', 'IV']
-    # if args.text_mode == 'sentence':
-    #     templates = ['A pathology slide with grade {} gliomas'] 
-    # if args.text_mode == 'description':
+    labels = ['II', 'III', 'IV']
+    if args.text_mode == 'sentence':
+        templates = ['A pathology slide with grade {} gliomas'] 
+    if args.text_mode == 'description':
 
         # caption_candidate = {
         #     'A pathology slide with grade II gliomas':
@@ -824,42 +824,42 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
         #     ]
         # }
 
-        # caption_candidate = {
-        #     'A pathology slide with grade II gliomas':
-        #     [
-        #     'Infiltrative growth pattern',
-        #     'Relatively uniform cells with round or oval nuclei and minimal pleomorphism',
-        #     'Low mitotic activity',
-        #     'Absence of microvascular proliferation',
-        #     'Absence of necrosis',
-        #     # 'A pathology slide with grade II gliomas'
-        #     ],
+        caption_candidate = {
+            'A pathology slide with grade II gliomas':
+            [
+            'Infiltrative growth pattern',
+            'Relatively uniform cells with round or oval nuclei and minimal pleomorphism',
+            'Low mitotic activity',
+            'Absence of microvascular proliferation',
+            'Absence of necrosis',
+            # 'A pathology slide with grade II gliomas'
+            ],
 
-        #     'A pathology slide with grade III gliomas':
-        #     [
-        #     # "Increased cellularity compared to grade II gliomas",
-        #     # "Mild to moderate nuclear atypia and pleomorphism.",
-        #     # "Higher mitotic activity compared to grade II gliomas.",
-        #     # "Absence or minimal microvascular proliferation.",
-        #     # "Absence or focal necrosis.",
-        #     "Increased cellularity",
-        #     "Mild to moderate nuclear atypia and pleomorphism.",
-        #     "Higher mitotic activity.",
-        #     "Absence or minimal microvascular proliferation.",
-        #     "Absence or focal necrosis.",
-        #     # 'A pathology slide with grade III gliomas'
-        #     ],
+            'A pathology slide with grade III gliomas':
+            [
+            # "Increased cellularity compared to grade II gliomas",
+            # "Mild to moderate nuclear atypia and pleomorphism.",
+            # "Higher mitotic activity compared to grade II gliomas.",
+            # "Absence or minimal microvascular proliferation.",
+            # "Absence or focal necrosis.",
+            "Increased cellularity",
+            "Mild to moderate nuclear atypia and pleomorphism.",
+            "Higher mitotic activity.",
+            "Absence or minimal microvascular proliferation.",
+            "Absence or focal necrosis.",
+            # 'A pathology slide with grade III gliomas'
+            ],
 
-        #     'A pathology slide with grade IV gliomas':
-        #     [
-        #     "Highly cellular and pleomorphic tumor cells",
-        #     "Marked nuclear atypia and pleomorphism.",
-        #     "High mitotic activity",
-        #     "Prominent microvascular proliferation",
-        #     "Presence of necrosis, often with pseudopalisading pattern (tumor cells surrounding necrotic areas).",
-        #     # 'A pathology slide with grade IV gliomas'
-        #     ]
-        # }
+            'A pathology slide with grade IV gliomas':
+            [
+            "Highly cellular and pleomorphic tumor cells",
+            "Marked nuclear atypia and pleomorphism.",
+            "High mitotic activity",
+            "Prominent microvascular proliferation",
+            "Presence of necrosis, often with pseudopalisading pattern (tumor cells surrounding necrotic areas).",
+            # 'A pathology slide with grade IV gliomas'
+            ]
+        }
 
     
     device = torch.device("cuda") if torch.cuda.is_available() else "cpu"
@@ -867,7 +867,7 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
 
 
     captions = []
-    captions.append('ecrosis')
+    captions.append('necrosis')
     captions.append('microvascular proliferation')
     captions.append('mitotic activity')
     # captions.append('nuclear atypia and pleomorphism')
@@ -1058,7 +1058,7 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
                 range_itc[key][ind][1] =  mean_itc[key][ind] + std_itc[key][ind]
 
 
-        print('a')
+        # print('a')
 
             # x_omic = x_omic.cuda(args.gpu, non_blocking=True)
             # target = target.cuda(args.gpu, non_blocking=True)
@@ -1211,26 +1211,26 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
 ZERO-SHOT classification
 '''
 def test_zeroshot_pathomic(args):
-    # ckpt = torch.load(args.test_ckpt_addr, map_location='cpu')
-    # state_dict = OrderedDict()
-    # for k, v in ckpt['state_dict'].items():
-    #     state_dict[k.replace('module.', '')] = v
+    ckpt = torch.load(args.test_ckpt_addr, map_location='cpu')
+    state_dict = OrderedDict()
+    for k, v in ckpt['state_dict'].items():
+        state_dict[k.replace('module.', '')] = v
 
-    # # create model
-    # old_args = ckpt['args']
-    # print("=> creating model: {}".format(old_args.model))
-    # try: # enter here
-    #     model = getattr(models, old_args.model)(args=args)
-    #     model.cuda()
-    #     model.load_state_dict(state_dict, strict=True)
-    #     print("=> loaded resume checkpoint '{}'".format(args.test_ckpt_addr))
-    # except:
-    #     model = getattr(models, args.model)(args=args)
-    #     model.cuda()
-    #     model.load_state_dict(state_dict, strict=True)
-    #     print("=> loaded resume checkpoint '{}'".format(args.test_ckpt_addr))
+    # create model
+    old_args = ckpt['args']
+    print("=> creating model: {}".format(old_args.model))
+    try: # enter here
+        model = getattr(models, old_args.model)(args=args)
+        model.cuda()
+        model.load_state_dict(state_dict, strict=True)
+        print("=> loaded resume checkpoint '{}'".format(args.test_ckpt_addr))
+    except:
+        model = getattr(models, args.model)(args=args)
+        model.cuda()
+        model.load_state_dict(state_dict, strict=True)
+        print("=> loaded resume checkpoint '{}'".format(args.test_ckpt_addr))
 
-    # # tokenizer = SimpleTokenizer()
+    # tokenizer = SimpleTokenizer()
 
     # if 'biomed' in args.model.lower():
 
