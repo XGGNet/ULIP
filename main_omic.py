@@ -597,7 +597,7 @@ def main(args):
         Temp debug
         '''
         # if epoch == args.start_epoch:
-        # val_stats = test_zeroshot_pathomic_core(val_loader, model, tokenizer, args) 
+        val_stats = test_zeroshot_pathomic_core(val_loader, model, tokenizer, args) 
 
         '''
         text_mode = description的时候, train里可能会报错..
@@ -914,17 +914,17 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
             #     attention_mask = torch.from_numpy(np.array(attention_mask)).cuda()
             #     class_embeddings = utils.get_model(model).encode_text(texts, attention_mask=attention_mask)
             # else: 
-            texts = tokenizer(texts).cuda(args.gpu, non_blocking=True) # torch.Size([1, 77]) # [3,77]
+            texts = tokenizer(texts).cuda(args.gpu, non_blocking=True) # torch.Size([1, 77]) # [3,77] #[5,77]
             if len(texts.shape) < 2:
                 texts = texts[None, ...]
 
-            class_embeddings = utils.get_model(model).encode_text(texts) # 调用SLIP () | biomedCLIP (512)
+            class_embeddings = utils.get_model(model).encode_text(texts) # 调用SLIP () | biomedCLIP (512) # [5,512]
 
             class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
             class_embeddings = class_embeddings.mean(dim=0)
             class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
             text_features.append(class_embeddings)
-        text_features = torch.stack(text_features, dim=0)  # 一样的  # 调用SLIP (3,512) | biomedCLIP (3,512)
+        text_features = torch.stack(text_features, dim=0)  # 一样的  # 调用SLIP (3,512) | biomedCLIP (3,512) #[3,512]
 
         end = time.time()
         per_class_stats = collections.defaultdict(int)
