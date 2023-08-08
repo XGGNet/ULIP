@@ -242,9 +242,9 @@ class CITEImageLoss(nn.Module):
         if self.args.text_mode == 'sentence':
             logits = (logit_scale * image_embed_all @ self.text_features.t())
         elif self.args.text_mode == 'description':
-            logits =  torch.zeros((local_batch_size, len(text_description_features))).cuda() # [B,3]
+            logits =  torch.zeros((local_batch_size, len(self.text_description_features))).cuda() # [B,3]
             for k, text_embed in self.text_description_features.items():
-                logits[:, list(caption_candidate.keys()).index(k) ] = (logit_scale * image_embed_all @ text_embed.t()).mean(dim=-1)
+                logits[:, list(self.text_description_features.keys()).index(k) ] = (logit_scale * image_embed_all @ text_embed.t()).mean(dim=-1)
 
         text_cls_loss = F.cross_entropy(logits, cls_label)
         loss = text_cls_loss

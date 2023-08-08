@@ -774,6 +774,7 @@ def test_zeroshot_pathomic_core(data, args=None):
     elif 'quilt' in args.model.lower():
         model, preprocess_train, preprocess_val = open_clip.create_model_and_transforms('hf-hub:wisdomik/QuiltNet-B-32')
         tokenizer = open_clip.get_tokenizer('hf-hub:wisdomik/QuiltNet-B-32')
+        # tokenizer = SimpleTokenizer()
 
         preprocess_val = transforms.Compose([
                 # transforms.RandomCrop(224),  #42
@@ -835,7 +836,8 @@ def test_zeroshot_pathomic_core(data, args=None):
 
     labels = ['II', 'III', 'IV']
     if args.text_mode == 'sentence':
-        templates = ['A pathology slide with WHO grade {} gliomas'] 
+        templates = ['A pathology slide with WHO grade {} gliomas.'] 
+
     if args.text_mode == 'description':
 
         # caption_candidate = {
@@ -863,6 +865,101 @@ def test_zeroshot_pathomic_core(data, args=None):
         #     ]
         # }
 
+        
+        # caption_candidate = {
+        #     # 'A pathology slide with grade II gliomas':
+        #     0:
+        #     [
+        #     # 'A pathology slide with grade II gliomas',    
+        #     'infiltrative growth pattern',
+        #     'relatively uniform cells with round or oval nuclei and minimal pleomorphism',
+        #     'low mitotic activity',
+        #     'absence of microvascular proliferation',
+        #     'absence of necrosis',
+
+        #     # 'A pathology slide with grade II gliomas'
+        #     ],
+
+        #     # 'A pathology slide with grade III gliomas':
+        #     1:
+        #     [
+        #     # "Increased cellularity compared to grade II gliomas",
+        #     # "Mild to moderate nuclear atypia and pleomorphism.",
+        #     # "Higher mitotic activity compared to grade II gliomas.",
+        #     # "Absence or minimal microvascular proliferation.",
+        #     # "Absence or focal necrosis.",
+        #     # 'A pathology slide with grade III gliomas',
+        #     "increased cellularity",
+        #     "mild to moderate nuclear atypia and pleomorphism",
+        #     "higher mitotic activity",
+        #     "absence or minimal microvascular proliferation",
+        #     "absence or focal necrosis",
+
+        #     # 'A pathology slide with grade III gliomas'
+        #     ],
+
+        #     # 'A pathology slide with grade IV gliomas':
+        #     2:
+        #     [
+        #     # 'A pathology slide with grade IV gliomas',
+        #     "highly cellular and pleomorphic tumor cells",
+        #     "marked nuclear atypia and pleomorphism",
+        #     "high mitotic activity",
+        #     "prominent microvascular proliferation",
+        #     "presence of necrosis, often with pseudopalisading pattern, tumor cells surrounding necrotic areas",
+
+        #     # 'A pathology slide with grade IV gliomas'
+        #     ]
+        # }
+        # # caption_candidate = {k: ['A pathology image where there is ' + i for i in v] for k, v in caption_candidate.items()}
+        # caption_candidate = {k: [i+'.' for i in v] for k, v in caption_candidate.items()}
+
+        # caption_candidate = {
+        #     # 'A pathology slide with grade II gliomas':
+        #     0:
+        #     [
+        #     # 'A pathology slide with grade II gliomas',    
+        #     'Infiltrative growth pattern.',
+        #     'Relatively uniform cells with round or oval nuclei and minimal pleomorphism.',
+        #     'Low mitotic activity.',
+        #     'Absence of microvascular proliferation.',
+        #     'Absence of necrosis.',
+
+        #     # 'A pathology slide with grade II gliomas'
+        #     ],
+
+        #     # 'A pathology slide with grade III gliomas':
+        #     1:
+        #     [
+        #     # "Increased cellularity compared to grade II gliomas",
+        #     # "Mild to moderate nuclear atypia and pleomorphism.",
+        #     # "Higher mitotic activity compared to grade II gliomas.",
+        #     # "Absence or minimal microvascular proliferation.",
+        #     # "Absence or focal necrosis.",
+        #     # 'A pathology slide with grade III gliomas',
+        #     "Increased cellularity.",
+        #     "Mild to moderate nuclear atypia and pleomorphism",
+        #     "Higher mitotic activity",
+        #     "Absence or minimal microvascular proliferation",
+        #     "Absence or focal necrosis",
+
+        #     # 'A pathology slide with grade III gliomas'
+        #     ],
+
+        #     # 'A pathology slide with grade IV gliomas':
+        #     2:
+        #     [
+        #     # 'A pathology slide with grade IV gliomas',
+        #     "Highly cellular and pleomorphic tumor cells.",
+        #     "Marked nuclear atypia and pleomorphism",
+        #     "High mitotic activity.",
+        #     "Prominent microvascular proliferation.",
+        #     "Presence of necrosis, often with pseudopalisading pattern (tumor cells surrounding necrotic areas).",
+
+        #     # 'A pathology slide with grade IV gliomas'
+        #     ]
+        # }
+    
         caption_candidate = {
             # 'A pathology slide with grade II gliomas':
             0:
@@ -910,6 +1007,7 @@ def test_zeroshot_pathomic_core(data, args=None):
         }
 
 
+
     with torch.no_grad():
         # text_features = []
         # for id, l in enumerate(labels):
@@ -941,14 +1039,31 @@ def test_zeroshot_pathomic_core(data, args=None):
         
         if args.text_mode == 'sentence':
             texts = [templates[0].format(l) for l in labels]
+
+            # texts = ['A pathology slide with WHO grade II gliomas', 'A pathology slide with WHO grade II gliomas.'] 
+
             # texts.app[t.format(l) for t in templates]
             texts = tokenizer(texts).cuda()
+            
+            # 找出texts里第一个为49407的位置
+            texts[texts==49407] = 0
+            for i, text in enumerate(texts):
+                text[torch.where(text==0)[0][0]] = 49407
+                texts[i] = text
+
         elif args.text_mode == 'description':
             description_tokens = OrderedDict()
             for k, v in caption_candidate.items():
                 tokens = tokenizer(v).cuda()
                 # description_encodings[k] = F.normalize(model.encode_text(tokens))
+
+                tokens[tokens==49407] = 0
+                for i, token in enumerate(tokens):
+                    token[torch.where(token==0)[0][0]] = 49407
+                    tokens[i] = token
+
                 description_tokens[k] = tokens
+            
 
             # return description_encodings
 
@@ -1211,6 +1326,7 @@ def test_zeroshot_pathomic_core(data, args=None):
     # return {'acc1': top1.avg, 'acc5': top5.avg}
 
     # print(f'0-shot *[omic] Acc@1 {omic_top1.avg:.3f} | AP: {omic_ap.avg:.3f} | ROCAUC: {omic_rocauc.avg:.3f}')
+    print(f'###Text mode is {args.text_mode} ###')
     print(f'0-shot *[path] Acc@1 {path_top1.avg:.3f} | AP: {path_ap.avg:.3f} | ROCAUC: {path_rocauc.avg:.3f}')
     # print(f'0-shot *[mm] Acc@1 {mm_top1.avg:.3f} | AP: {mm_ap.avg:.3f} | ROCAUC: {mm_rocauc.avg:.3f}')
     # return{
