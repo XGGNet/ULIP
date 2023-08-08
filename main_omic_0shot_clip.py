@@ -28,6 +28,9 @@ from data.dataset_3d import *
 
 from utils.utils import get_dataset
 import models.ULIP_models as models
+
+from slip_models import SLIP_VITB16
+
 from utils.tokenizer import SimpleTokenizer
 from utils import utils
 from data.dataset_3d import customized_collate_fn
@@ -43,6 +46,7 @@ from sklearn.metrics import average_precision_score, f1_score, roc_auc_score, re
 import open_clip
 
 from transformers import AutoTokenizer
+
 
 
 def get_args_parser():
@@ -283,7 +287,11 @@ def get_args_parser():
 
     parser.add_argument('--used_train_data_ratio', type=float, default=1.0)
 
+    parser.add_argument('--batch_size', type=int, default=512)
+
     parser.add_argument('--half_label_and_pair', action='store_true', default=False)
+
+    parser.add_argument('--slide_window', action='store_true', default=False)
 
 
 
@@ -313,6 +321,10 @@ def main(args):
         zero_stats = test_zeroshot_pathomic(args)
         print(zero_stats)
         return
+
+    '''
+    ALL skip...
+    '''
     
     if 'biomed' in args.model.lower():
 
@@ -330,191 +342,193 @@ def main(args):
         # pass
     else:
         tokenizer = SimpleTokenizer()
-
     args.tokenizer = tokenizer
 
-    if True:
-        # create model
-        print("=> creating model: {}".format(args.model))
-        model = getattr(models, args.model)(args=args)
-        model.cuda(args.gpu)
+    # create model
+    print("=> creating model: {}".format(args.model))
+    model = getattr(models, args.model)(args=args)
+    model.cuda(args.gpu)
 
-        if args.distributed:
-            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], bucket_cap_mb=200, find_unused_parameters=False)
+    if args.distributed:
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], bucket_cap_mb=200, find_unused_parameters=False)
 
 
-        # define loss function (criterion) and optimizer
-        criterion = models.get_loss(args).cuda(args.gpu)
+    # define loss function (criterion) and optimizer
+    criterion = models.get_loss(args).cuda(args.gpu)
 
-        p_wd, p_non_wd = [], []
-        for n, p in model.named_parameters():
-            if not p.requires_grad:
-                print('in optimizer freeze {}'.format(n))
-                continue  # frozen weights
-            print('update parameters {}'.format(n)) 
-            # 原始版本 ~ 观察到只更新 point_encoder部分 
-            if p.ndim < 2 or 'bias' in n or 'ln' in n or 'bn' in n:
-                p_non_wd.append(p)
-            else:
-                p_wd.append(p)
-
-        optim_params = [{"params": p_wd, "weight_decay": args.wd},
-                        {"params": p_non_wd, "weight_decay": 0}]
-
-        optimizer = torch.optim.AdamW(optim_params, lr=args.lr, betas=args.betas,
-                                        eps=args.eps, weight_decay=args.wd)
-        scaler = amp.GradScaler(enabled=not args.disable_amp)
-
-        # optionally resume from a checkpoint (takes precedence over autoresume)
-        if args.resume:
-            if os.path.isfile(args.resume):
-                print("=> loading resume checkpoint '{}'".format(args.resume))
-                checkpoint = torch.load(args.resume, map_location='cpu')
-                epoch = checkpoint['epoch'] if 'epoch' in checkpoint else 0
-                args.start_epoch = epoch
-                result = model.load_state_dict(checkpoint['state_dict'], strict=False)
-                print(result)
-                optimizer.load_state_dict(checkpoint['optimizer']) if 'optimizer' in checkpoint else ()
-                scaler.load_state_dict(checkpoint['scaler']) if 'scaler' in checkpoint else ()
-                best_acc1 = checkpoint['best_acc1']
-                print("=> loaded resume checkpoint '{}' (epoch {})"
-                    .format(args.resume, epoch))
-            else:
-                print("=> no checkpoint found at '{}'".format(args.resume))
+    p_wd, p_non_wd = [], []
+    for n, p in model.named_parameters():
+        if not p.requires_grad:
+            print('in optimizer freeze {}'.format(n))
+            continue  # frozen weights
+        print('update parameters {}'.format(n)) 
+        # 原始版本 ~ 观察到只更新 point_encoder部分 
+        if p.ndim < 2 or 'bias' in n or 'ln' in n or 'bn' in n:
+            p_non_wd.append(p)
         else:
-            # auto-resume from the latest checkpoint in output directory
-            latest = os.path.join(args.output_dir, 'checkpoint.pt')
-            if os.path.isfile(latest):
-                print("=> loading latest checkpoint '{}'".format(latest))
-                latest_checkpoint = torch.load(latest, map_location='cpu')
-                args.start_epoch = latest_checkpoint['epoch']
-                model.load_state_dict(latest_checkpoint['state_dict'])
-                optimizer.load_state_dict(latest_checkpoint['optimizer'])
-                scaler.load_state_dict(latest_checkpoint['scaler'])
-                best_acc1 = latest_checkpoint['best_acc1']
-                print("=> loaded latest checkpoint '{}' (epoch {})"
-                    .format(latest, latest_checkpoint['epoch']))
+            p_wd.append(p)
 
-        cudnn.benchmark = True
+    optim_params = [{"params": p_wd, "weight_decay": args.wd},
+                    {"params": p_non_wd, "weight_decay": 0}]
 
+    optimizer = torch.optim.AdamW(optim_params, lr=args.lr, betas=args.betas,
+                                    eps=args.eps, weight_decay=args.wd)
+    scaler = amp.GradScaler(enabled=not args.disable_amp)
 
-        # Data loading code
-        print("=> creating dataset")
-
-    if True:
-        
-        if not os.path.exists(args.checkpoints_dir): os.makedirs(args.checkpoints_dir)
-        if not os.path.exists(os.path.join(args.checkpoints_dir, args.exp_name)): os.makedirs(os.path.join(args.checkpoints_dir, args.exp_name))
-        if not os.path.exists(os.path.join(args.checkpoints_dir, args.exp_name, args.model_name)): os.makedirs(os.path.join(args.checkpoints_dir, args.exp_name, args.model_name))
-
-        ### Initiate Data
-        ignore_missing_histype = 1 if 'grad' in args.task else 0  # opt.task = 'grad'
-        ignore_missing_moltype = 1 if 'omic' in args.mode else 0  # opt.mode = 'pathomic'
-
-        use_patch, roi_dir = ('_patch_', 'all_st_patches_512') if args.use_vgg_features else ('_', 'all_st')
-        use_rnaseq = '_rnaseq' if args.use_rnaseq else ''
-
-        # data_cv_path = '%s/splits/gbmlgg15cv_%s_%d_%d_%d%s.pkl' % (opt.dataroot, roi_dir, ignore_missing_moltype, ignore_missing_histype, opt.use_vgg_features, use_rnaseq)
-        data_cv_path = '%s/splits_5cv_2022/gbmlgg5cv_%s_%d_%d_%d%s.pkl' % (args.dataroot, roi_dir, ignore_missing_moltype, ignore_missing_histype, args.use_vgg_features, use_rnaseq)
-        print("Loading %s" % data_cv_path)
-        # './data/TCGA_GBMLGG/splits_5cv_2022/gbmlgg5cv_all_st_1_1_0.pkl'
-        data_cv = pickle.load(open(data_cv_path, 'rb'))
-        data_cv_splits = data_cv['cv_splits']
-
-        results, results_path, results_omic = [], [], []
-        rocauc_fuse_all, ap_fuse_all, f1_micro_fuse_all, f1_gradeIV_fuse_all = [], [], [], []
-        rocauc_path_all, ap_path_all, f1_micro_path_all, f1_gradeIV_path_all = [], [], [], []
-        rocauc_omic_all, ap_omic_all, f1_micro_omic_all, f1_gradeIV_omic_all = [], [], [], []
-
-        ### 读取裁剪之后的每张ROI对应的9个patches.
-        roi_dir = 'all_st_patches_512'
-        # data_cv_path_patches = '%s/splits/gbmlgg15cv_%s_%d_%d_%d%s.pkl' % (opt.dataroot, roi_dir, ignore_missing_moltype, ignore_missing_histype, opt.use_vgg_features, use_rnaseq)
-        data_cv_path_patches = '%s/splits_5cv_2022/gbmlgg5cv_%s_%d_%d_%d%s.pkl' % (args.dataroot, roi_dir, ignore_missing_moltype, ignore_missing_histype, args.use_vgg_features, use_rnaseq)
-        # './data/TCGA_GBMLGG/splits_5cv_2022/gbmlgg5cv_all_st_patches_512_1_1_0.pkl'
-        # 512, 1, 1, 0
-        print("Loading %s" % data_cv_path_patches)
-        data_cv_patches = pickle.load(open(data_cv_path_patches, 'rb'))
-        data_cv_splits_patches = data_cv_patches['cv_splits']
-        # 每个split的训练集和测试集
-
-        k = 1
-        data = data_cv_splits[1] # 先只取单折, 进行debug调通
-
-        if args.used_train_data_ratio<1:
-            for key, value in data['train'].items():
-                data['train'][key] = value[:int(len(value)*args.used_train_data_ratio)]
-
-
-        train_dataset, test_dataset, n_data = pathomic_dataset(args, data) 
-        # len(train_dataset) = 1072, len(test_dataset) = 253
-        data_patches = data_cv_splits_patches[k]
-        test_patches_dataset = pathomic_patches_dataset(args, data_patches)
-        # len(test_patches_dataset) = 2277
-
-        if args.train_bz > len(train_dataset):
-            args.train_bz = len(train_dataset)
-        if args.test_bz > len(test_dataset):
-            args.test_bz = len(test_dataset)
-
-        '''
-        Temporary comments for debug
-        '''
-        if args.test_mode == 'full':
-            val_dataset = test_dataset
-        elif args.test_mode == 'patch' or args.test_mode == 'patches':
-            val_dataset = test_patches_dataset
+    # optionally resume from a checkpoint (takes precedence over autoresume)
+    if args.resume:
+        if os.path.isfile(args.resume):
+            print("=> loading resume checkpoint '{}'".format(args.resume))
+            checkpoint = torch.load(args.resume, map_location='cpu')
+            epoch = checkpoint['epoch'] if 'epoch' in checkpoint else 0
+            args.start_epoch = epoch
+            result = model.load_state_dict(checkpoint['state_dict'], strict=False)
+            print(result)
+            optimizer.load_state_dict(checkpoint['optimizer']) if 'optimizer' in checkpoint else ()
+            scaler.load_state_dict(checkpoint['scaler']) if 'scaler' in checkpoint else ()
+            best_acc1 = checkpoint['best_acc1']
+            print("=> loaded resume checkpoint '{}' (epoch {})"
+                  .format(args.resume, epoch))
         else:
-            raise ValueError('Invalid test mode')
-        
-        # val_dataset = test_patches_dataset # 在patches上测试
-        # val_dataset = test_dataset
+            print("=> no checkpoint found at '{}'".format(args.resume))
+    else:
+        # auto-resume from the latest checkpoint in output directory
+        latest = os.path.join(args.output_dir, 'checkpoint.pt')
+        if os.path.isfile(latest):
+            print("=> loading latest checkpoint '{}'".format(latest))
+            latest_checkpoint = torch.load(latest, map_location='cpu')
+            args.start_epoch = latest_checkpoint['epoch']
+            model.load_state_dict(latest_checkpoint['state_dict'])
+            optimizer.load_state_dict(latest_checkpoint['optimizer'])
+            scaler.load_state_dict(latest_checkpoint['scaler'])
+            best_acc1 = latest_checkpoint['best_acc1']
+            print("=> loaded latest checkpoint '{}' (epoch {})"
+                  .format(latest, latest_checkpoint['epoch']))
+
+    cudnn.benchmark = True
 
 
-        # 似乎是 训练的前面阶段用whole image 测试, 后期再用 patches测试
-        # 这里我们暂时先用whole image; 先调通再说
+    # Data loading code
+    print("=> creating dataset")
 
 
-        if args.distributed:
-            train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset) 
-            val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset)
-        else:
-            train_sampler = None
-            val_sampler = None
 
-        # len = 1072
-        # train_loader = torch.utils.data.DataLoader(
-        #     train_dataset, batch_size=args.train_bz, shuffle=(train_sampler is None),
-        #     num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True,
-        #     collate_fn=customized_collate_fn)
+    '''
+    OMIC
+    '''
+    if not os.path.exists(args.checkpoints_dir): os.makedirs(args.checkpoints_dir)
+    if not os.path.exists(os.path.join(args.checkpoints_dir, args.exp_name)): os.makedirs(os.path.join(args.checkpoints_dir, args.exp_name))
+    if not os.path.exists(os.path.join(args.checkpoints_dir, args.exp_name, args.model_name)): os.makedirs(os.path.join(args.checkpoints_dir, args.exp_name, args.model_name))
 
-        # len = 2277
-        # val_loader = torch.utils.data.DataLoader(
-        #     val_dataset, batch_size=args.test_bz, shuffle=(val_sampler is None),
-        #     num_workers=args.workers, pin_memory=True, sampler=val_sampler, drop_last=False)
+    ### Initiate Data
+    ignore_missing_histype = 1 if 'grad' in args.task else 0  # opt.task = 'grad'
+    ignore_missing_moltype = 1 if 'omic' in args.mode else 0  # opt.mode = 'pathomic'
 
-        '''
-        0719 train_loader shuffle=True,    val_loader shuffle=False
-        '''
-        # len = 1072
-        train_loader = torch.utils.data.DataLoader(
-            train_dataset, batch_size=args.train_bz, shuffle=(train_sampler is None),
-            num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True,
-            collate_fn=customized_collate_fn)
+    use_patch, roi_dir = ('_patch_', 'all_st_patches_512') if args.use_vgg_features else ('_', 'all_st')
+    use_rnaseq = '_rnaseq' if args.use_rnaseq else ''
 
-        # len = 2277
-        val_loader = torch.utils.data.DataLoader(
-            val_dataset, batch_size=args.test_bz, shuffle=False,
-            num_workers=args.workers, pin_memory=True, sampler=val_sampler, drop_last=False)
-            # len(val_loader) = 5
+    # data_cv_path = '%s/splits/gbmlgg15cv_%s_%d_%d_%d%s.pkl' % (opt.dataroot, roi_dir, ignore_missing_moltype, ignore_missing_histype, opt.use_vgg_features, use_rnaseq)
+    data_cv_path = '%s/splits_5cv_2022/gbmlgg5cv_%s_%d_%d_%d%s.pkl' % (args.dataroot, roi_dir, ignore_missing_moltype, ignore_missing_histype, args.use_vgg_features, use_rnaseq)
+    print("Loading %s" % data_cv_path)
+    # './data/TCGA_GBMLGG/splits_5cv_2022/gbmlgg5cv_all_st_1_1_0.pkl'
+    data_cv = pickle.load(open(data_cv_path, 'rb'))
+    data_cv_splits = data_cv['cv_splits']
 
-        lr_schedule = utils.cosine_scheduler(args.lr, args.lr_end, args.epochs,
-            len(train_loader) // args.update_freq, warmup_epochs=args.warmup_epochs, start_warmup_value=args.lr_start)
+    results, results_path, results_omic = [], [], []
+    rocauc_fuse_all, ap_fuse_all, f1_micro_fuse_all, f1_gradeIV_fuse_all = [], [], [], []
+    rocauc_path_all, ap_path_all, f1_micro_path_all, f1_gradeIV_path_all = [], [], [], []
+    rocauc_omic_all, ap_omic_all, f1_micro_omic_all, f1_gradeIV_omic_all = [], [], [], []
 
-        print(args)
+    ### 读取裁剪之后的每张ROI对应的9个patches.
+    roi_dir = 'all_st_patches_512'
+    # data_cv_path_patches = '%s/splits/gbmlgg15cv_%s_%d_%d_%d%s.pkl' % (opt.dataroot, roi_dir, ignore_missing_moltype, ignore_missing_histype, opt.use_vgg_features, use_rnaseq)
+    data_cv_path_patches = '%s/splits_5cv_2022/gbmlgg5cv_%s_%d_%d_%d%s.pkl' % (args.dataroot, roi_dir, ignore_missing_moltype, ignore_missing_histype, args.use_vgg_features, use_rnaseq)
+    # './data/TCGA_GBMLGG/splits_5cv_2022/gbmlgg5cv_all_st_patches_512_1_1_0.pkl'
+    # 512, 1, 1, 0
+    print("Loading %s" % data_cv_path_patches)
+    data_cv_patches = pickle.load(open(data_cv_path_patches, 'rb'))
+    data_cv_splits_patches = data_cv_patches['cv_splits']
+    # 每个split的训练集和测试集
 
-        print("=> beginning training")
+    k = 1
+    data = data_cv_splits[1] # 先只取单折, 进行debug调通
+
+    if args.used_train_data_ratio<1:
+        for key, value in data['train'].items():
+            data['train'][key] = value[:int(len(value)*args.used_train_data_ratio)]
+
+
+    train_dataset, test_dataset, n_data = pathomic_dataset(args, data) 
+    # len(train_dataset) = 1072, len(test_dataset) = 253
+    data_patches = data_cv_splits_patches[k]
+    test_patches_dataset = pathomic_patches_dataset(args, data_patches)
+    # len(test_patches_dataset) = 2277
+
+    if args.train_bz > len(train_dataset):
+        args.train_bz = len(train_dataset)
+    if args.test_bz > len(test_dataset):
+        args.test_bz = len(test_dataset)
+
+    '''
+    Temporary comments for debug
+    '''
+    if args.test_mode == 'full':
+        val_dataset = test_dataset
+    elif args.test_mode == 'patch' or args.test_mode == 'patches':
+        val_dataset = test_patches_dataset
+    else:
+        raise ValueError('Invalid test mode')
+    
+    # val_dataset = test_patches_dataset # 在patches上测试
+    # val_dataset = test_dataset
+
+
+    # 似乎是 训练的前面阶段用whole image 测试, 后期再用 patches测试
+    # 这里我们暂时先用whole image; 先调通再说
+
+
+    if args.distributed:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset) 
+        val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset)
+    else:
+        train_sampler = None
+        val_sampler = None
+
+    # len = 1072
+    # train_loader = torch.utils.data.DataLoader(
+    #     train_dataset, batch_size=args.train_bz, shuffle=(train_sampler is None),
+    #     num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True,
+    #     collate_fn=customized_collate_fn)
+
+    # len = 2277
+    # val_loader = torch.utils.data.DataLoader(
+    #     val_dataset, batch_size=args.test_bz, shuffle=(val_sampler is None),
+    #     num_workers=args.workers, pin_memory=True, sampler=val_sampler, drop_last=False)
+
+    '''
+    0719 train_loader shuffle=True,    val_loader shuffle=False
+    '''
+    # len = 1072
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=args.train_bz, shuffle=(train_sampler is None),
+        num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True,
+        collate_fn=customized_collate_fn)
+
+    # len = 2277
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset, batch_size=args.test_bz, shuffle=False,
+        num_workers=args.workers, pin_memory=True, sampler=val_sampler, drop_last=False)
+        # len(val_loader) = 5
+
+    lr_schedule = utils.cosine_scheduler(args.lr, args.lr_end, args.epochs,
+        len(train_loader) // args.update_freq, warmup_epochs=args.warmup_epochs, start_warmup_value=args.lr_start)
+
+    print(args)
+
+    print("=> beginning training")
 
     best_epoch = -1
+
     best_ap = 0
     best_auc = 0
 
@@ -523,14 +537,15 @@ def main(args):
         '''
         Temp debug
         '''
-        if epoch == args.start_epoch:
-            val_stats = test_zeroshot_pathomic_core(val_loader, model, tokenizer, args) 
+        # if epoch == args.start_epoch:
+        val_stats = test_zeroshot_pathomic_core(val_loader, model, tokenizer, args) 
 
         '''
         text_mode = description的时候, train里可能会报错..
         跑的
         '''
 
+        
         if args.distributed:
             train_sampler.set_epoch(epoch)
 
@@ -700,7 +715,7 @@ def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule,
             'logit_scale': logit_scale}
 
 
-def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
+def test_zeroshot_pathomic_core(data, args=None):
     batch_time = AverageMeter('Time', ':6.3f')
     
     omic_top1 = AverageMeter('Acc@1', ':6.2f')
@@ -717,15 +732,16 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
     mm_ap = AverageMeter('AP', ':6.2f')
 
     # 512,512 -> 224, 224  ==> 3*3
-    if args.test_mode == 'full':
-        sw_ratio = 1024//224 + 1
-    elif args.test_mode == 'patch' or args.test_mode == 'patches':
-        sw_ratio = 512//224 + 1
+    # if args.test_mode == 'full':
+    #     sw_ratio = 1024//224 + 1
+    # elif args.test_mode == 'patch' or args.test_mode == 'patches':
+    #     sw_ratio = 512//224 + 1
 
-    progress = ProgressMeter(
-    len(test_loader)*sw_ratio * sw_ratio,
-    [batch_time, omic_top1],
-    prefix='Test: ')
+
+    # progress = ProgressMeter(
+    # len(test_loader)*sw_ratio * sw_ratio,
+    # [batch_time, omic_top1],
+    # prefix='Test: ')
 
 
     # progress = ProgressMeter(
@@ -734,21 +750,84 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
     #     prefix='Test: ')
 
     # switch to evaluate mode
+
+    args.input_size_path = 224
+    if args.slide_window:
+        resize = 512
+    else:
+        resize = 224
+
+    if 'biomed' in args.model.lower():
+        model, preprocess_train, preprocess_val = open_clip.create_model_and_transforms('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224')
+        tokenizer =  open_clip.get_tokenizer('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224') 
+
+        preprocess_val = transforms.Compose([
+                            # transforms.RandomCrop(224),  #30
+                            transforms.Resize(resize), # 32
+                            # lambda x: x.covert('RGB'),
+                            transforms.ToTensor(),
+                            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                            # normalize
+                            ])
+
+
+    elif 'quilt' in args.model.lower():
+        model, preprocess_train, preprocess_val = open_clip.create_model_and_transforms('hf-hub:wisdomik/QuiltNet-B-32')
+        tokenizer = open_clip.get_tokenizer('hf-hub:wisdomik/QuiltNet-B-32')
+
+        preprocess_val = transforms.Compose([
+                # transforms.RandomCrop(224),  #42
+                transforms.Resize(resize), # 40
+                lambda x: x.convert('RGB'),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                # normalize
+                ])
+    # elif 'mizero' in args.model.lower():
+    #     model_checkpoint = "/data/cxli/code/MI-Zero/src/checkpoint/ctranspath_448_bioclinicalbert/checkpoints/epoch_50.pt"
+    #     # args.model_name = args.model_checkpoint.split('/')[-3]
+    #     tokenizer = load_pretrained_tokenizer(args.model_name)
+    elif 'slip' in args.model.lower():
+        ckpt_path = "/data/cxli/code/ULIP/data/initialize_models/slip_base_100ep.pt"
+        ckpt = torch.load(ckpt_path, map_location='cpu')
+        state_dict = OrderedDict()
+        for k, v in ckpt['state_dict'].items():
+            state_dict[k.replace('module.', '')] = v
+
+        old_args = ckpt['args']
+        print("=> creating model: {}".format(old_args.model))
+        # model = getattr(slip_models, old_args.model)
+        model = SLIP_VITB16(rand_embed=False,
+            ssl_mlp_dim=old_args.ssl_mlp_dim, ssl_emb_dim=old_args.ssl_emb_dim)
+        model.cuda()
+        model.load_state_dict(state_dict, strict=True)
+        # print("=> loaded resume checkpoint '{}' (epoch {})".format(args.resume, ckpt['epoch']))
+
+        tokenizer = SimpleTokenizer()
+
+        preprocess_val = transforms.Compose([
+            # transforms.RandomCrop(224),  #42
+            transforms.Resize(resize), # 40
+            lambda x: x.convert('RGB'),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            # transforms.Normalize(mean=[0.485, 0.456, 0.406],
+            #                     std=[0.229, 0.224, 0.225]),
+            ])
+
+    else:
+        tokenizer = SimpleTokenizer()
+    
+    
+    # args.input_size_path = 224
+
+    device = 'cuda'
+    model.cuda()
     model.eval()
 
-    # print('=> encoding captions')
-    # with open(os.path.join("./data", 'templates.json')) as f:
-    #     templates = json.load(f)[args.validate_dataset_prompt]
+    # context_length = 256
 
-    # templates
-    # ['a point cloud model of {}.', 'There is a {} in the scene.', 'There is the {} in the scene.', 'a photo of a {} in the scene.', 'a photo of the {} in...the scene.', 'a photo of one {} in...the scene.', 'itap of a {}.', 'itap of my {}.', 'itap of the {}.', 'a photo of a {}.', 'a photo of my {}.', 'a photo of the {}.', 'a photo of one {}.', 'a photo of many {}.', ...]
-
-    # with open(os.path.join("./data", 'labels.json')) as f:
-    #     labels = json.load(f)[args.validate_dataset_name]
-
-    # labels
-    # ['airplane', 'bathtub', 'bed', 'bench', 'bookshelf', 'bottle', 'bowl', 'car', 'chair', 'cone', 'cup', 'curtain', 'desk', 'door', ...]
-
+    # images = torch.stack([preprocess_val(Image.open(path)) for path in data['test']['x_path']]).to(device)
 
     # grading_name = {0: 'II', 1: 'III', 2: 'IV'}
     # # caption = f'A pathology slide with WHO grading {grading_name[ int(single_g) ]} '
@@ -785,8 +864,10 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
         # }
 
         caption_candidate = {
-            'A pathology slide with grade II gliomas':
+            # 'A pathology slide with grade II gliomas':
+            0:
             [
+            # 'A pathology slide with grade II gliomas',    
             'Infiltrative growth pattern',
             'Relatively uniform cells with round or oval nuclei and minimal pleomorphism',
             'Low mitotic activity',
@@ -796,13 +877,15 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
             # 'A pathology slide with grade II gliomas'
             ],
 
-            'A pathology slide with grade III gliomas':
+            # 'A pathology slide with grade III gliomas':
+            1:
             [
             # "Increased cellularity compared to grade II gliomas",
             # "Mild to moderate nuclear atypia and pleomorphism.",
             # "Higher mitotic activity compared to grade II gliomas.",
             # "Absence or minimal microvascular proliferation.",
             # "Absence or focal necrosis.",
+            # 'A pathology slide with grade III gliomas',
             "Increased cellularity",
             "Mild to moderate nuclear atypia and pleomorphism.",
             "Higher mitotic activity.",
@@ -812,8 +895,10 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
             # 'A pathology slide with grade III gliomas'
             ],
 
-            'A pathology slide with grade IV gliomas':
+            # 'A pathology slide with grade IV gliomas':
+            2:
             [
+            # 'A pathology slide with grade IV gliomas',
             "Highly cellular and pleomorphic tumor cells",
             "Marked nuclear atypia and pleomorphism.",
             "High mitotic activity",
@@ -826,31 +911,46 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
 
 
     with torch.no_grad():
-        text_features = []
-        for id, l in enumerate(labels):
-            try:
-                templates = list(caption_candidate.values())[id]
-            except:
-                pass
+        # text_features = []
+        # for id, l in enumerate(labels):
+        # #     try:
+        #         templates = list(caption_candidate.values())[id]
+        #     except:
+        #         pass
 
-            texts = [t.format(l) for t in templates]
-            # if 'mizero' in args.model.lower():
-            #     texts, attention_mask = tokenize(tokenizer, texts) 
-            #     texts = torch.from_numpy(np.array(texts)).cuda(args.gpu, non_blocking=True)
-            #     attention_mask = torch.from_numpy(np.array(attention_mask)).cuda()
-            #     class_embeddings = utils.get_model(model).encode_text(texts, attention_mask=attention_mask)
-            # else: 
-            texts = tokenizer(texts).cuda(args.gpu, non_blocking=True) # torch.Size([1, 77]) # [3,77] #[5,77]
-            if len(texts.shape) < 2:
-                texts = texts[None, ...]
+            # texts = [t.format(l) for t in templates]
 
-            class_embeddings = utils.get_model(model).encode_text(texts) # 调用SLIP () | biomedCLIP (512) # [5,512]
+            # print('a')
+        #     # if 'mizero' in args.model.lower():
+        #     #     texts, attention_mask = tokenize(tokenizer, texts) 
+        #     #     texts = torch.from_numpy(np.array(texts)).cuda(args.gpu, non_blocking=True)
+        #     #     attention_mask = torch.from_numpy(np.array(attention_mask)).cuda()
+        #     #     class_embeddings = utils.get_model(model).encode_text(texts, attention_mask=attention_mask)
+        #     # else: 
+        #     texts = tokenizer(texts).cuda(args.gpu, non_blocking=True) # torch.Size([1, 77]) # [3,77] #[5,77]
+        #     if len(texts.shape) < 2:
+        #         texts = texts[None, ...]
 
-            class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
-            class_embeddings = class_embeddings.mean(dim=0)
-            class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
-            text_features.append(class_embeddings)
-        text_features = torch.stack(text_features, dim=0)  # 一样的  # 调用SLIP (3,512) | biomedCLIP (3,512) #[3,512]
+        #     class_embeddings = utils.get_model(model).encode_text(texts) # 调用SLIP () | biomedCLIP (512) # [5,512]
+
+        #     class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
+        #     class_embeddings = class_embeddings.mean(dim=0)
+        #     class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
+        #     text_features.append(class_embeddings)
+        # text_features = torch.stack(text_features, dim=0)  # 一样的  # 调用SLIP (3,512) | biomedCLIP (3,512) #[3,512]
+        
+        if args.text_mode == 'sentence':
+            texts = [templates[0].format(l) for l in labels]
+            # texts.app[t.format(l) for t in templates]
+            texts = tokenizer(texts).cuda()
+        elif args.text_mode == 'description':
+            description_tokens = OrderedDict()
+            for k, v in caption_candidate.items():
+                tokens = tokenizer(v).cuda()
+                # description_encodings[k] = F.normalize(model.encode_text(tokens))
+                description_tokens[k] = tokens
+
+            # return description_encodings
 
         end = time.time()
         per_class_stats = collections.defaultdict(int)
@@ -861,17 +961,26 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
         
         # per_class_correct_top5 = collections.defaultdict(int)
 
-        for i, inputs in enumerate(test_loader):
-            # (pc, target, target_name)
-            x_path_full, x_text , x_omic, single_e, single_t, single_g = inputs
+        test_paths = data['test']['x_path']
+        test_targets = data['test']['g'].astype(np.int64)
 
-            # target_name = x_text
-            target = single_g
+        data_length = len(test_paths)
+
+        for i in range(0,data_length, args.batch_size ):
+            try:
+                images = torch.stack([preprocess_val(Image.open(path)) for path in test_paths[i:i+ args.batch_size ]]).to(device)
+                targets = test_targets[i:i+ args.batch_size ]
+            except:
+                images = torch.stack([preprocess_val(Image.open(path)) for path in test_paths[i:]]).to(device)
+                targets = test_targets[i:]
+
+
+            x_path_full = images
 
             target_name = []
         
-            for g in single_g:
-                grade = ['II', 'III', 'IV'    ]
+            for g in targets:
+                grade = ['II', 'III', 'IV'][g]
                 name = f'Grade {grade}'
                 per_class_stats[name] += 1
                 target_name.append(name)
@@ -905,21 +1014,64 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
 
                     # encode pathology
                     if sw_cnt == 0:
-                        path_features = utils.get_model(model).encode_image(x_path)
-                        path_features = path_features / path_features.norm(dim=-1, keepdim=True)
-                    else:
-                        _path_features = utils.get_model(model).encode_image(x_path)
-                        _path_features = _path_features / _path_features.norm(dim=-1, keepdim=True)
+                        # path_features = utils.get_model(model).encode_image(x_path)
+                        if args.text_mode == 'sentence':
+                            image_features, text_features, logit_scale  = model(x_path, texts)
 
-                        path_features += _path_features
+                            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+
+                            logits = (logit_scale * image_features @ text_features.t()).detach().softmax(dim=-1)
+                            
+                        elif args.text_mode == 'description':
+                            logits = torch.zeros((len(x_path), len(description_tokens))).cuda()
+                            for k, tokens in description_tokens.items():
+                                image_features, text_features, logit_scale  = model(x_path, tokens)
+
+                                image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                                text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+                                
+                                logits[:, k ] = (logit_scale * image_features @ text_features.t()).mean(dim=-1)
+                                
+                            logits = logits.detach().softmax(dim=-1)
+
+                            # print('a')
+
+                    else:
+                        # _path_features = utils.get_model(model).encode_image(x_path)
+                        # _path_features = _path_features / _path_features.norm(dim=-1, keepdim=True)
+                        if args.text_mode == 'sentence':
+                            image_features, text_features, logit_scale  = model(x_path, texts)
+                            _logits = (logit_scale * image_features @ text_features.t()).detach().softmax(dim=-1)
+                        elif args.text_mode == 'description':
+                            _logits = torch.zeros((len(x_path), len(description_tokens))).cuda()
+                            for k, tokens in description_tokens.items():
+                                image_features, text_features, logit_scale  = model(x_path, tokens)
+                                _logits[:, k] = (logit_scale * image_features @ text_features.t()).mean(dim=-1)
+
+                            _logits = _logits.detach().softmax(dim=-1)
+
+
+                        logits += _logits
                     sw_cnt += 1
                 
-            path_features = path_features /sw_cnt # 调用SLIP () | biomedCLIP (512,512)
-            logits_per_path=  path_features @ text_features.t()
+            logits = logits /sw_cnt # 调用SLIP () | biomedCLIP (512,512)
+
+            # image_features, text_features, logit_scale = model(images, texts)
+
+            # logits = (logit_scale * image_features @ text_features.t()).detach().softmax(dim=-1)
+
+            logits_per_path = logits
+            # sorted_indices = torch.argsort(logits, dim=-1, descending=True)
+            # logits = logits.cpu().numpy()
+            # sorted_indices = sorted_indices.cpu().numpy()
 
 
-            x_omic = x_omic.cuda(args.gpu, non_blocking=True)
-            target = target.cuda(args.gpu, non_blocking=True)
+            # logits_per_path=  path_features @ text_features.t()
+
+
+            # x_omic = x_omic.cuda(args.gpu, non_blocking=True)
+            # targets = targets.cuda(args.gpu, non_blocking=True)
 
             # # encode pc
             # pc_features = utils.get_model(model).encode_pc(pc)
@@ -928,9 +1080,9 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
 
             # encode geneomic
             
-            omic_features = utils.get_model(model).encode_omic(x_omic)
-            omic_features = omic_features / omic_features.norm(dim=-1, keepdim=True)
-            logits_per_omic=  omic_features @ text_features.t()
+            # omic_features = utils.get_model(model).encode_omic(x_omic)
+            # omic_features = omic_features / omic_features.norm(dim=-1, keepdim=True)
+            # logits_per_omic=  omic_features @ text_features.t()
             
 
             
@@ -975,137 +1127,136 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
             # top5.update(acc5.item(), x_omic.size(0)).
 
             
-            omic_acc1, omic_correct = accuracy(logits_per_omic, target)
-            omic_top1.update(omic_acc1[0].item(), x_omic.size(0))
-            omic_rocauc.update(roc_auc_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_omic,-1).cpu().numpy(), average ='micro')*100)
-            omic_ap.update(average_precision_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_omic,-1).cpu().numpy(), average='micro')*100)
+        #     omic_acc1, omic_correct = accuracy(logits_per_omic, target)
+        #     omic_top1.update(omic_acc1[0].item(), x_omic.size(0))
+        #     omic_rocauc.update(roc_auc_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_omic,-1).cpu().numpy(), average ='micro')*100)
+        #     omic_ap.update(average_precision_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_omic,-1).cpu().numpy(), average='micro')*100)
             
 
 
-            path_acc1, path_correct = accuracy(logits_per_path, target) # 加不加softmax都一样
+            path_acc1, path_correct = accuracy(logits_per_path, torch.from_numpy(targets).cuda()) # 加不加softmax都一样
             path_top1.update(path_acc1[0].item(), x_path_full.size(0))
 
-            path_rocauc.update(roc_auc_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_path,-1).cpu().numpy(), average ='micro')*100) # 加完softmax会发生一定下降 (规律不明..)
+            path_rocauc.update(roc_auc_score(np.eye(3)[targets], logits_per_path.cpu().numpy(), average ='micro')*100) # 加完softmax会发生一定下降 (规律不明..)
 
-            path_ap.update(average_precision_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_path,-1).cpu().numpy(), average='micro')*100) # 加完softmax会发生一定下降 (规律不明..)
+            path_ap.update(average_precision_score(np.eye(3)[targets], logits_per_path.cpu().numpy(), average='micro')*100) # 加完softmax会发生一定下降 (规律不明..)
 
             
-            prob_mm = (F.softmax(logits_per_omic,-1) + F.softmax(logits_per_path, -1)) / 2
-            mm_acc1, mm_correct = accuracy(prob_mm, target)
-            mm_top1.update(mm_acc1[0].item(), x_omic.size(0))
-            mm_rocauc.update(roc_auc_score(np.eye(3)[target.cpu().numpy()], prob_mm.cpu().numpy(), average ='micro')*100)
-            mm_ap.update(average_precision_score(np.eye(3)[target.cpu().numpy()], prob_mm.cpu().numpy(), average='micro')*100)
+        #     prob_mm = (F.softmax(logits_per_omic,-1) + F.softmax(logits_per_path, -1)) / 2
+        #     mm_acc1, mm_correct = accuracy(prob_mm, target)
+        #     mm_top1.update(mm_acc1[0].item(), x_omic.size(0))
+        #     mm_rocauc.update(roc_auc_score(np.eye(3)[target.cpu().numpy()], prob_mm.cpu().numpy(), average ='micro')*100)
+        #     mm_ap.update(average_precision_score(np.eye(3)[target.cpu().numpy()], prob_mm.cpu().numpy(), average='micro')*100)
             
 
-            # measure elapsed time
-            batch_time.update(time.time() - end)
-            end = time.time()
+        #     # measure elapsed time
+        #     batch_time.update(time.time() - end)
+        #     end = time.time()
             
             
-            if logits_per_omic.shape[0] > 1:
-                omic_top1_accurate = omic_correct[:1].squeeze()
-                path_top1_accurate = path_correct[:1].squeeze()
-                mm_top1_accurate = mm_correct[:1].squeeze()
-            else:
-                omic_top1_accurate = omic_correct[:1][0]
-                path_top1_accurate = path_correct[:1][0]
-                mm_top1_accurate = mm_correct[:1][0]
+        #     if logits_per_omic.shape[0] > 1:
+        #         omic_top1_accurate = omic_correct[:1].squeeze()
+        #         path_top1_accurate = path_correct[:1].squeeze()
+        #         mm_top1_accurate = mm_correct[:1].squeeze()
+        #     else:
+        #         omic_top1_accurate = omic_correct[:1][0]
+        #         path_top1_accurate = path_correct[:1][0]
+        #         mm_top1_accurate = mm_correct[:1][0]
 
-            # top5_accurate = correct[:5].float().sum(0, keepdim=True).squeeze()
+        #     # top5_accurate = correct[:5].float().sum(0, keepdim=True).squeeze()
 
-            for idx, name in enumerate(target_name):
-                if omic_top1_accurate[idx].item():
-                    omic_per_class_correct_top1[name] += 1
-                if path_top1_accurate[idx].item():
-                    path_per_class_correct_top1[name] += 1
-                if mm_top1_accurate[idx].item():
-                    mm_per_class_correct_top1[name] += 1
-                # if top5_accurate[idx].item():
-                #     per_class_correct_top5[name] += 1
+        #     for idx, name in enumerate(target_name):
+        #         if omic_top1_accurate[idx].item():
+        #             omic_per_class_correct_top1[name] += 1
+        #         if path_top1_accurate[idx].item():
+        #             path_per_class_correct_top1[name] += 1
+        #         if mm_top1_accurate[idx].item():
+        #             mm_per_class_correct_top1[name] += 1
+        #         # if top5_accurate[idx].item():
+        #         #     per_class_correct_top5[name] += 1
 
-            if i % args.print_freq == 0:
-                progress.display(i)
+        #     if i % args.print_freq == 0:
+        #         progress.display(i)
             
-        omic_top1_accuracy_per_class = {}
-        path_top1_accuracy_per_class = {}
-        mm_top1_accuracy_per_class = {}
-        # top5_accuracy_per_class = {}
-        for name in per_class_stats.keys():
-            omic_top1_accuracy_per_class[name] = omic_per_class_correct_top1[name] / per_class_stats[name]
-            path_top1_accuracy_per_class[name] = path_per_class_correct_top1[name] / per_class_stats[name]
-            mm_top1_accuracy_per_class[name] = mm_per_class_correct_top1[name] / per_class_stats[name]
-            # top5_accuracy_per_class[name] = per_class_correct_top5[name] / per_class_stats[name]
+        # omic_top1_accuracy_per_class = {}
+        # path_top1_accuracy_per_class = {}
+        # mm_top1_accuracy_per_class = {}
+        # # top5_accuracy_per_class = {}
+        # for name in per_class_stats.keys():
+        #     omic_top1_accuracy_per_class[name] = omic_per_class_correct_top1[name] / per_class_stats[name]
+        #     path_top1_accuracy_per_class[name] = path_per_class_correct_top1[name] / per_class_stats[name]
+        #     mm_top1_accuracy_per_class[name] = mm_per_class_correct_top1[name] / per_class_stats[name]
+        #     # top5_accuracy_per_class[name] = per_class_correct_top5[name] / per_class_stats[name]
 
-        omic_top1_accuracy_per_class = collections.OrderedDict(omic_top1_accuracy_per_class)
-        path_top1_accuracy_per_class = collections.OrderedDict(path_top1_accuracy_per_class)
-        mm_top1_accuracy_per_class = collections.OrderedDict(mm_top1_accuracy_per_class)
+        # omic_top1_accuracy_per_class = collections.OrderedDict(omic_top1_accuracy_per_class)
+        # path_top1_accuracy_per_class = collections.OrderedDict(path_top1_accuracy_per_class)
+        # mm_top1_accuracy_per_class = collections.OrderedDict(mm_top1_accuracy_per_class)
         # top5_accuracy_per_class = collections.OrderedDict(top5_accuracy_per_class)
-        print('[omic]')
-        print(','.join(omic_top1_accuracy_per_class.keys()))
-        print(','.join([str(value) for value in omic_top1_accuracy_per_class.values()]))
+        # print('[omic]')
+        # print(','.join(omic_top1_accuracy_per_class.keys()))
+        # print(','.join([str(value) for value in omic_top1_accuracy_per_class.values()]))
 
-        print('[path]')
-        print(','.join(path_top1_accuracy_per_class.keys()))
-        print(','.join([str(value) for value in path_top1_accuracy_per_class.values()]))
+        # print('[path]')
+        # print(','.join(path_top1_accuracy_per_class.keys()))
+        # print(','.join([str(value) for value in path_top1_accuracy_per_class.values()]))
 
-        print('[mm]')
-        print(','.join(mm_top1_accuracy_per_class.keys()))
-        print(','.join([str(value) for value in mm_top1_accuracy_per_class.values()]))
+        # print('[mm]')
+        # print(','.join(mm_top1_accuracy_per_class.keys()))
+        # print(','.join([str(value) for value in mm_top1_accuracy_per_class.values()]))
 
         # print(','.join([str(value) for value in top5_accuracy_per_class.values()]))
 
-    progress.synchronize()
+    # progress.synchronize()
     # print('0-shot * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}')
     # return {'acc1': top1.avg, 'acc5': top5.avg}
 
-    print(f'0-shot *[omic] Acc@1 {omic_top1.avg:.3f} | AP: {omic_ap.avg:.3f} | ROCAUC: {omic_rocauc.avg:.3f}')
+    # print(f'0-shot *[omic] Acc@1 {omic_top1.avg:.3f} | AP: {omic_ap.avg:.3f} | ROCAUC: {omic_rocauc.avg:.3f}')
     print(f'0-shot *[path] Acc@1 {path_top1.avg:.3f} | AP: {path_ap.avg:.3f} | ROCAUC: {path_rocauc.avg:.3f}')
-    print(f'0-shot *[mm] Acc@1 {mm_top1.avg:.3f} | AP: {mm_ap.avg:.3f} | ROCAUC: {mm_rocauc.avg:.3f}')
-    return{
-            'omic': {'acc1': omic_top1.avg, 'ap': omic_ap.avg, 'rocauc': omic_rocauc.avg}, 'path': {'acc1': path_top1.avg, 'ap': path_ap.avg, 'rocauc': path_rocauc.avg}, 'mm': {'acc1': mm_top1.avg, 'ap': mm_ap.avg, 'rocauc': mm_rocauc.avg}
-        }
+    # print(f'0-shot *[mm] Acc@1 {mm_top1.avg:.3f} | AP: {mm_ap.avg:.3f} | ROCAUC: {mm_rocauc.avg:.3f}')
+    # return{
+    #         'omic': {'acc1': omic_top1.avg, 'ap': omic_ap.avg, 'rocauc': omic_rocauc.avg}, 'path': {'acc1': path_top1.avg, 'ap': path_ap.avg, 'rocauc': path_rocauc.avg}, 'mm': {'acc1': mm_top1.avg, 'ap': mm_ap.avg, 'rocauc': mm_rocauc.avg}
+    #     }
 
 '''
 ZERO-SHOT classification
 '''
 def test_zeroshot_pathomic(args):
-    ckpt = torch.load(args.test_ckpt_addr, map_location='cpu')
-    state_dict = OrderedDict()
-    for k, v in ckpt['state_dict'].items():
-        state_dict[k.replace('module.', '')] = v
+    # ckpt = torch.load(args.test_ckpt_addr, map_location='cpu')
+    # state_dict = OrderedDict()
+    # for k, v in ckpt['state_dict'].items():
+    #     state_dict[k.replace('module.', '')] = v
 
     # create model
-    old_args = ckpt['args']
-    print("=> creating model: {}".format(old_args.model))
-    try: # enter here
-        model = getattr(models, old_args.model)(args=args)
-        model.cuda()
-        model.load_state_dict(state_dict, strict=True)
-        print("=> loaded resume checkpoint '{}'".format(args.test_ckpt_addr))
-    except:
-        model = getattr(models, args.model)(args=args)
-        model.cuda()
-        model.load_state_dict(state_dict, strict=True)
-        print("=> loaded resume checkpoint '{}'".format(args.test_ckpt_addr))
+    # old_args = ckpt['args']
+    # print("=> creating model: {}".format(old_args.model))
+    # try: # enter here
+    #     model = getattr(models, old_args.model)(args=args)
+    #     model.cuda()
+    #     model.load_state_dict(state_dict, strict=True)
+    #     print("=> loaded resume checkpoint '{}'".format(args.test_ckpt_addr))
+    # except:
+    #     model = getattr(models, args.model)(args=args)
+    #     model.cuda()
+    #     model.load_state_dict(state_dict, strict=True)
+    #     print("=> loaded resume checkpoint '{}'".format(args.test_ckpt_addr))
 
     # tokenizer = SimpleTokenizer()
 
-    if 'biomed' in args.model.lower():
+    # if 'biomed' in args.model.lower():
 
-        tokenizer =  open_clip.get_tokenizer('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224') 
-        biomedclip, preprocess_train, preprocess_val = open_clip.create_model_and_transforms('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224')
+    #     tokenizer =  open_clip.get_tokenizer('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224') 
+    #     biomedclip, preprocess_train, preprocess_val = open_clip.create_model_and_transforms('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224')
     
-    elif 'quilt' in args.model.lower():
-        biomedclip, preprocess_train, preprocess_val = open_clip.create_model_and_transforms('hf-hub:wisdomik/QuiltNet-B-32')
-        tokenizer = open_clip.get_tokenizer('hf-hub:wisdomik/QuiltNet-B-32')
+    # elif 'quilt' in args.model.lower():
+    #     biomedclip, preprocess_train, preprocess_val = open_clip.create_model_and_transforms('hf-hub:wisdomik/QuiltNet-B-32')
+    #     tokenizer = open_clip.get_tokenizer('hf-hub:wisdomik/QuiltNet-B-32')
 
     # elif 'mizero' in args.model.lower():
     #     args.model_checkpoint = "/data/cxli/code/MI-Zero/src/checkpoint/ctranspath_448_bioclinicalbert/checkpoints/epoch_50.pt"
     #     args.model_name = args.model_checkpoint.split('/')[-3]
     #     tokenizer = load_pretrained_tokenizer(args.model_name)
-        # pass
-    else:
-        tokenizer = SimpleTokenizer()
+    # else:
+    #     tokenizer = SimpleTokenizer()
 
 
     # test_dataset = get_dataset(None, tokenizer, args, 'val')
@@ -1113,9 +1264,9 @@ def test_zeroshot_pathomic(args):
     #     test_dataset, batch_size=args.batch_size, shuffle=False,
     #     num_workers=args.workers, pin_memory=True, sampler=None, drop_last=False
 
-    if not os.path.exists(args.checkpoints_dir): os.makedirs(args.checkpoints_dir)
-    if not os.path.exists(os.path.join(args.checkpoints_dir, args.exp_name)): os.makedirs(os.path.join(args.checkpoints_dir, args.exp_name))
-    if not os.path.exists(os.path.join(args.checkpoints_dir, args.exp_name, args.model_name)): os.makedirs(os.path.join(args.checkpoints_dir, args.exp_name, args.model_name))
+    # if not os.path.exists(args.checkpoints_dir): os.makedirs(args.checkpoints_dir)
+    # if not os.path.exists(os.path.join(args.checkpoints_dir, args.exp_name)): os.makedirs(os.path.join(args.checkpoints_dir, args.exp_name))
+    # if not os.path.exists(os.path.join(args.checkpoints_dir, args.exp_name, args.model_name)): os.makedirs(os.path.join(args.checkpoints_dir, args.exp_name, args.model_name))
 
     ### Initiate Data
     ignore_missing_histype = 1 if 'grad' in args.task else 0  # opt.task = 'grad'
@@ -1145,28 +1296,28 @@ def test_zeroshot_pathomic(args):
     k = 1
     data = data_cv_splits[k] # 先只取单折, 进行debug调通
     
-    args.tokenizer = tokenizer
+    # args.tokenizer = tokenizer
 
-    train_dataset, test_dataset, n_data = pathomic_dataset(args, data) 
+    # train_dataset, test_dataset, n_data = pathomic_dataset(args, data) 
     # len(train_dataset) = 1072, len(test_dataset) = 253
     data_patches = data_cv_splits_patches[k]
-    test_patches_dataset = pathomic_patches_dataset(args, data_patches)
+    # test_patches_dataset = pathomic_patches_dataset(args, data_patches)
     # len(test_patches_dataset) = 
 
     # val_dataset = test_patches_dataset # 在patches上测试
-    if args.test_mode == 'full':
-        val_dataset = test_dataset
-    elif args.test_mode == 'patch' or args.test_mode == 'patches':
-        val_dataset = test_patches_dataset
-    else:
-        raise ValueError('Invalid test mode')
+    # if args.test_mode == 'full':
+    #     val_dataset = test_dataset
+    # elif args.test_mode == 'patch' or args.test_mode == 'patches':
+    #     val_dataset = test_patches_dataset
+    # else:
+    #     raise ValueError('Invalid test mode')
 
 
-    test_loader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=args.test_bz, shuffle=False,
-        num_workers=args.workers, pin_memory=True, sampler=None, drop_last=False
-    )
-    results = test_zeroshot_pathomic_core(test_loader, model, tokenizer, args)
+    # test_loader = torch.utils.data.DataLoader(
+    #     val_dataset, batch_size=args.test_bz, shuffle=False,
+    #     num_workers=args.workers, pin_memory=True, sampler=None, drop_last=False
+    # )
+    results = test_zeroshot_pathomic_core(data_patches, args)
 
     return results
 
@@ -1241,6 +1392,7 @@ def accuracy(output, target, topk=(1,)):
     with torch.no_grad():
         maxk = max(topk)
         batch_size = target.size(0)
+     
 
         _, pred = output.topk(maxk, 1, True, True)
         pred = pred.t()

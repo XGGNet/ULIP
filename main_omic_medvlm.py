@@ -344,7 +344,7 @@ def main(args):
 
 
         # define loss function (criterion) and optimizer
-        criterion = models.get_loss(args).cuda(args.gpu)
+        # criterion = models.get_loss(args).cuda(args.gpu)
 
         p_wd, p_non_wd = [], []
         for n, p in model.named_parameters():
@@ -514,6 +514,59 @@ def main(args):
 
         print("=> beginning training")
 
+
+        # if args.text_mode == 'sentence':
+        #     grading_name = {0: 'II', 1: 'III', 2: 'IV'}
+        #     caption_candidates = [f'A pathology slide with WHO grade {grading_name[ i ]} gliomas' for i in range(3) ]
+        #     tokenized_captions = tokenizer(caption)#.unsqueeze(0)
+        # elif args.text_mode == 'description':
+        #     caption_candidates = {
+        #         'A pathology slide with WHO grade II gliomas':
+        #         [
+        #         'Infiltrative growth pattern',
+        #         'Relatively uniform cells with round or oval nuclei and minimal pleomorphism',
+        #         'Low mitotic activity',
+        #         'Absence of microvascular proliferation',
+        #         'Absence of necrosis',
+
+        #         # 'A pathology slide with grade II gliomas'
+        #         ],
+
+        #         'A pathology slide with WHO grade III gliomas':
+        #         [
+        #         # "Increased cellularity compared to grade II gliomas",
+        #         # "Mild to moderate nuclear atypia and pleomorphism.",
+        #         # "Higher mitotic activity compared to grade II gliomas.",
+        #         # "Absence or minimal microvascular proliferation.",
+        #         # "Absence or focal necrosis.",
+        #         "Increased cellularity",
+        #         "Mild to moderate nuclear atypia and pleomorphism.",
+        #         "Higher mitotic activity.",
+        #         "Absence or minimal microvascular proliferation.",
+        #         "Absence or focal necrosis.",
+
+        #         # 'A pathology slide with grade III gliomas'
+        #         ],
+
+        #         'A pathology slide with WHO grade IV gliomas':
+        #         [
+        #         "Highly cellular and pleomorphic tumor cells",
+        #         "Marked nuclear atypia and pleomorphism.",
+        #         "High mitotic activity",
+        #         "Prominent microvascular proliferation",
+        #         "Presence of necrosis, often with pseudopalisading pattern (tumor cells surrounding necrotic areas).",
+
+        #         # 'A pathology slide with grade IV gliomas'
+        #         ]
+        #     }
+        #     # caption = list(caption_candidate.values())[int(single_g)]
+        #     tokenized_captions = OrderedDict()
+        #     for k, v in caption_candidates.items():
+        #         tokenized_captions[k] = tokenizer(v)    
+
+        # args.tokenized_captions = tokenized_captions
+
+
     best_epoch = -1
     best_ap = 0
     best_auc = 0
@@ -525,6 +578,7 @@ def main(args):
         '''
         if epoch == args.start_epoch:
             val_stats = test_zeroshot_pathomic_core(val_loader, model, tokenizer, args) 
+            criterion = models.get_loss(args).cuda(args.gpu)
 
         '''
         text_mode = description的时候, train里可能会报错..
@@ -541,7 +595,7 @@ def main(args):
 
             val_stats = test_zeroshot_pathomic_core(val_loader, model, tokenizer, args)
 
-            main_modality = ['omic', 'path', 'mm'][2]
+            main_modality = ['omic', 'path', 'mm'][1]# image is the main mod
 
             print(val_stats)
 
@@ -635,14 +689,16 @@ def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule,
         # image = inputs[4] #[3,224,224]
         (x_path, x_texts, x_omic, censor, survtime, grade, index, sample_idx) = inputs 
 
-        inputs = [x_omic, x_texts, x_path] # torch.Size([1072, 1, 3, 77])  # torch.Size([1072, 1, 3, 77])
+        inputs = [tensor.cuda(args.gpu, non_blocking=True) for tensor in [x_path, x_omic, grade] ]
 
+        inputs = {'images': inputs[0], 'gene': inputs[1], 'cls_label': inputs[2]} # torch.Size([1072, 1, 3, 77])  # torch.Size([1072, 1, 3, 77])
 
-        inputs = [tensor.cuda(args.gpu, non_blocking=True) for tensor in inputs]
 
         # compute output
         with amp.autocast(enabled=not args.disable_amp):
+
             outputs = model(*inputs)
+            outputs['cls_label'] = grade
             loss_dict = criterion(outputs)
             loss = loss_dict['loss']
             loss /= args.update_freq
@@ -785,7 +841,7 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
         # }
 
         caption_candidate = {
-            'A pathology slide with grade II gliomas':
+            'A pathology slide with WHO grade II gliomas':
             [
             'Infiltrative growth pattern',
             'Relatively uniform cells with round or oval nuclei and minimal pleomorphism',
@@ -796,7 +852,7 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
             # 'A pathology slide with grade II gliomas'
             ],
 
-            'A pathology slide with grade III gliomas':
+            'A pathology slide with WHO grade III gliomas':
             [
             # "Increased cellularity compared to grade II gliomas",
             # "Mild to moderate nuclear atypia and pleomorphism.",
@@ -812,7 +868,7 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
             # 'A pathology slide with grade III gliomas'
             ],
 
-            'A pathology slide with grade IV gliomas':
+            'A pathology slide with WHO grade IV gliomas':
             [
             "Highly cellular and pleomorphic tumor cells",
             "Marked nuclear atypia and pleomorphism.",
@@ -826,31 +882,52 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
 
 
     with torch.no_grad():
-        text_features = []
-        for id, l in enumerate(labels):
-            try:
-                templates = list(caption_candidate.values())[id]
-            except:
-                pass
+        # text_features = []
+        # for id, l in enumerate(labels):
+        #     try:
+        #         templates = list(caption_candidate.values())[id]
+        #     except:
+        #         pass
 
-            texts = [t.format(l) for t in templates]
-            # if 'mizero' in args.model.lower():
-            #     texts, attention_mask = tokenize(tokenizer, texts) 
-            #     texts = torch.from_numpy(np.array(texts)).cuda(args.gpu, non_blocking=True)
-            #     attention_mask = torch.from_numpy(np.array(attention_mask)).cuda()
-            #     class_embeddings = utils.get_model(model).encode_text(texts, attention_mask=attention_mask)
-            # else: 
-            texts = tokenizer(texts).cuda(args.gpu, non_blocking=True) # torch.Size([1, 77]) # [3,77] #[5,77]
-            if len(texts.shape) < 2:
-                texts = texts[None, ...]
+        #     texts = [t.format(l) for t in templates]
+        
+        #     texts = tokenizer(texts).cuda(args.gpu, non_blocking=True) # [5,77]
+        #     if len(texts.shape) < 2:
+        #         texts = texts[None, ...] 
 
-            class_embeddings = utils.get_model(model).encode_text(texts) # 调用SLIP () | biomedCLIP (512) # [5,512]
+        #     class_embeddings = utils.get_model(model).encode_text(texts) # [5,512]
 
-            class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
-            class_embeddings = class_embeddings.mean(dim=0)
-            class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
-            text_features.append(class_embeddings)
-        text_features = torch.stack(text_features, dim=0)  # 一样的  # 调用SLIP (3,512) | biomedCLIP (3,512) #[3,512]
+        #     class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
+        #     class_embeddings = class_embeddings.mean(dim=0)
+        #     class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
+        #     text_features.append(class_embeddings)
+        # text_features = torch.stack(text_features, dim=0)  # 一样的  # 调用SLIP (3,512) | biomedCLIP (3,512) #[3,512]
+
+        # logit_scale =  utils.get_model(model).logit_scale
+
+        utils.get_model(model).logit_scale.data.clamp_(0, 4.6052) # 4.3307  |  4.4696
+        logit_scale = utils.get_model(model).logit_scale.exp().item() # 76.0 | 87
+
+
+        if args.text_mode == 'sentence':
+            texts = [templates[0].format(l) for l in labels]
+            # texts.app[t.format(l) for t in templates]
+            texts = tokenizer(texts).cuda()
+            text_features =  utils.get_model(model).encode_text(texts)
+            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+
+            args.text_features = text_features
+
+        elif args.text_mode == 'description':
+            text_description_features = OrderedDict()
+            for k, v in caption_candidate.items():
+                tokens = tokenizer(v).cuda() #[5,77]
+                description_features = utils.get_model(model).encode_text(tokens)
+                description_features = description_features / description_features.norm(dim=-1, keepdim=True)
+                text_description_features[ k ]  =  description_features #[5,512]
+                # 3 * [5,512]
+        
+            args.text_description_features = text_description_features
 
         end = time.time()
         per_class_stats = collections.defaultdict(int)
@@ -863,8 +940,8 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
 
         for i, inputs in enumerate(test_loader):
             # (pc, target, target_name)
-            x_path_full, x_text , x_omic, single_e, single_t, single_g = inputs
 
+            x_path_full, x_text , x_omic, single_e, single_t, single_g = inputs
             # target_name = x_text
             target = single_g
 
@@ -879,7 +956,7 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
             # pc = pc.cuda(args.gpu, non_blocking=True)
 
             sw_cnt = 0
-            temp_record = 0
+            # temp_record = 0
             for h in range(0, x_path_full.shape[-2], args.input_size_path):
                 for w in range(0, x_path_full.shape[-1], args.input_size_path):
 
@@ -899,23 +976,40 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
                         
                     
                     x_path = x_path_full[:, :, h_start:h_end, w_start:w_end]
-                    temp_record += x_path.sum()
+                    # temp_record += x_path.sum()
 
                     x_path = x_path.cuda(args.gpu, non_blocking=True)
+                    path_features = utils.get_model(model).encode_image(x_path)
+                    path_features = path_features / path_features.norm(dim=-1, keepdim=True)
 
                     # encode pathology
-                    if sw_cnt == 0:
-                        path_features = utils.get_model(model).encode_image(x_path)
-                        path_features = path_features / path_features.norm(dim=-1, keepdim=True)
+                    if sw_cnt == 0: 
+                        if args.text_mode == 'sentence':
+                            logits = (logit_scale * path_features @ text_features.t())
+                        elif args.text_mode == 'description':
+                            logits =  torch.zeros((len(x_path), len(text_description_features))).cuda() # [B,3]
+                            for k, text_features in text_description_features.items():
+                                logits[:, list(caption_candidate.keys()).index(k) ] = (logit_scale * path_features @ text_features.t()).mean(dim=-1)
+                            # logits = logits.detach().softmax(dim=-1)
                     else:
-                        _path_features = utils.get_model(model).encode_image(x_path)
-                        _path_features = _path_features / _path_features.norm(dim=-1, keepdim=True)
+                        if args.text_mode == 'sentence':
+                            _logits = (logit_scale * path_features @ text_features.t())
+                        elif args.text_mode == 'description':
+                            _logits =  torch.zeros((len(x_path), len(text_description_features))).cuda() # [B,3]
+                            for k, text_features in text_description_features.items():
+                                _logits[:, list(caption_candidate.keys()).index(k) ] = (logit_scale * path_features @ text_features.t()).mean(dim=-1)
+                            # _logits = _logits.detach().softmax(dim=-1)
 
-                        path_features += _path_features
+                        # path_features += _path_features
+                        logits += _logits
                     sw_cnt += 1
                 
-            path_features = path_features /sw_cnt # 调用SLIP () | biomedCLIP (512,512)
-            logits_per_path=  path_features @ text_features.t()
+            # path_features = path_features /sw_cnt # 调用SLIP () | biomedCLIP (512,512)
+            # logits_per_path=  path_features @ text_features.t()
+
+            logits = logits / sw_cnt
+            # logits = logits.softmax(dim=-1)
+            logits_per_path = logits
 
 
             x_omic = x_omic.cuda(args.gpu, non_blocking=True)
@@ -930,10 +1024,15 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
             
             omic_features = utils.get_model(model).encode_omic(x_omic)
             omic_features = omic_features / omic_features.norm(dim=-1, keepdim=True)
-            logits_per_omic=  omic_features @ text_features.t()
-            
+            if args.text_mode == 'sentence':
+                logits_per_omic=  omic_features @ text_features.t()
+            elif args.text_mode == 'description':
+                logits_per_omic =  torch.zeros((len(omic_features), len(text_description_features))).cuda() # [B,3]
+                for k, text_features in text_description_features.items():
+                    logits_per_omic[:, list(caption_candidate.keys()).index(k)] = (logit_scale * path_features @ text_features.t()).mean(dim=-1)
+                logits_per_omic = logits_per_omic.detach().softmax(dim=-1)
+    
 
-            
             # logits_per_omic.mean()    -0.0023   -0.0023  0.0183  0.0330 0.0431
             # logits_per_path.mean()    0.1201   0.1197 0.1201  0.1199 0.1197
             # target.mean()     282  282 282  282 282
@@ -958,8 +1057,6 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
             # temp_record   tensor(7.1498e+08)
 
 
-
-
             # measure accuracy and record loss
             # (acc1, acc5), correct = accuracy(logits_per_pc, target, topk=(1, 5))
             # # TODO: fix the all reduce for the correct variable, assuming only one process for evaluation!
@@ -975,20 +1072,18 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
             # top5.update(acc5.item(), x_omic.size(0)).
 
             
+       
+            path_acc1, path_correct = accuracy(logits_per_path, target) # 加不加softmax都一样
+            path_top1.update(path_acc1[0].item(), x_path_full.size(0))
+            path_rocauc.update(roc_auc_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_path,-1).cpu().numpy(), average ='micro')*100) # 加完softmax会发生一定下降 (规律不明..)
+            path_ap.update(average_precision_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_path,-1).cpu().numpy(), average='micro')*100) # 加完softmax会发生一定下降 (规律不明..)
+
+
             omic_acc1, omic_correct = accuracy(logits_per_omic, target)
             omic_top1.update(omic_acc1[0].item(), x_omic.size(0))
             omic_rocauc.update(roc_auc_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_omic,-1).cpu().numpy(), average ='micro')*100)
             omic_ap.update(average_precision_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_omic,-1).cpu().numpy(), average='micro')*100)
             
-
-
-            path_acc1, path_correct = accuracy(logits_per_path, target) # 加不加softmax都一样
-            path_top1.update(path_acc1[0].item(), x_path_full.size(0))
-
-            path_rocauc.update(roc_auc_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_path,-1).cpu().numpy(), average ='micro')*100) # 加完softmax会发生一定下降 (规律不明..)
-
-            path_ap.update(average_precision_score(np.eye(3)[target.cpu().numpy()], F.softmax(logits_per_path,-1).cpu().numpy(), average='micro')*100) # 加完softmax会发生一定下降 (规律不明..)
-
             
             prob_mm = (F.softmax(logits_per_omic,-1) + F.softmax(logits_per_path, -1)) / 2
             mm_acc1, mm_correct = accuracy(prob_mm, target)
@@ -1058,8 +1153,11 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
     # print('0-shot * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}')
     # return {'acc1': top1.avg, 'acc5': top5.avg}
 
-    print(f'0-shot *[omic] Acc@1 {omic_top1.avg:.3f} | AP: {omic_ap.avg:.3f} | ROCAUC: {omic_rocauc.avg:.3f}')
-    print(f'0-shot *[path] Acc@1 {path_top1.avg:.3f} | AP: {path_ap.avg:.3f} | ROCAUC: {path_rocauc.avg:.3f}')
+    print(f'###### Text mode is {args.text_mode} #######')
+
+    print(f'\n0-shot *[path] Acc@1 {path_top1.avg:.3f} | AP: {path_ap.avg:.3f} | ROCAUC: {path_rocauc.avg:.3f}')
+    
+    print(f'\n0-shot *[omic] Acc@1 {omic_top1.avg:.3f} | AP: {omic_ap.avg:.3f} | ROCAUC: {omic_rocauc.avg:.3f}')
     print(f'0-shot *[mm] Acc@1 {mm_top1.avg:.3f} | AP: {mm_ap.avg:.3f} | ROCAUC: {mm_rocauc.avg:.3f}')
     return{
             'omic': {'acc1': omic_top1.avg, 'ap': omic_ap.avg, 'rocauc': omic_rocauc.avg}, 'path': {'acc1': path_top1.avg, 'ap': path_ap.avg, 'rocauc': path_rocauc.avg}, 'mm': {'acc1': mm_top1.avg, 'ap': mm_ap.avg, 'rocauc': mm_rocauc.avg}

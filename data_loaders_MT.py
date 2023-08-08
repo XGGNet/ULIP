@@ -116,9 +116,11 @@ class PathomicDataset(Dataset):
             normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],std=[0.229, 0.224, 0.225])
         elif opt.normalization == 'biomedclip':
             normalize = transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
+        elif opt.normalization == 'quiltclip':
+            normalize = transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
         elif opt.normalization == 'data':
             normalize = transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-
+        
 
         self.train_transforms = transforms.Compose([
                             transforms.RandomHorizontalFlip(0.5),
@@ -132,6 +134,7 @@ class PathomicDataset(Dataset):
                             ])
         
         self.test_transforms = transforms.Compose([
+                            # transforms.Resize([opt.input_size_path, opt.input_size_path]),
                             transforms.ToTensor(),
                             # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
                             normalize
@@ -161,25 +164,64 @@ class PathomicDataset(Dataset):
             # templates = ['A pathology slide with grade {} gliomas']
             caption = f'A pathology slide with grade {grading_name[ int(single_g) ]} gliomas'
         elif self.opt.text_mode == 'description':
+            # caption_candidate = {
+            #     'A pathology slide with grade II gliomas':
+            #     [
+            #     "The cells tend to be relatively uniform in size and shape, and they may be arranged in a pattern that resembles the normal organization of tissue.",
+            #     "The cells have a relatively low rate of division (mitotic rate) and may be surrounded by normal brain tissue.",
+            #     "The tumor may have a well-defined border between the tumor and the surrounding tissue."
+            #     ],
+            #     'A pathology slide with grade III gliomas':
+            #     [
+            #     "The cells tend to be more variable in size and shape, and they may show signs of abnormal division (mitotic figures).",
+            #     "The cells may be arranged in a more irregular pattern and may infiltrate the surrounding brain tissue.",
+            #     "There may be areas of dead tissue (necrosis) within the tumor."
+            #     ],
+            #     ' A pathology slide with grade IV gliomas':
+            #     [
+            #     'The cells tend to be highly abnormal in appearance and may be very variable in size and shape, with large, irregular nuclei.',
+            #     'There may be a high degree of mitotic activity, with many cells dividing rapidly.',
+            #     'The tumor may have a very irregular border and may infiltrate extensively into the surrounding tissue.'
+            #     'There may be areas of necrosis within the tumor.'
+            #     ]
+            # }
             caption_candidate = {
-                'A pathology slide with grade II gliomas':
+                'A pathology slide with WHO grade II gliomas':
                 [
-                "The cells tend to be relatively uniform in size and shape, and they may be arranged in a pattern that resembles the normal organization of tissue.",
-                "The cells have a relatively low rate of division (mitotic rate) and may be surrounded by normal brain tissue.",
-                "The tumor may have a well-defined border between the tumor and the surrounding tissue."
+                'Infiltrative growth pattern',
+                'Relatively uniform cells with round or oval nuclei and minimal pleomorphism',
+                'Low mitotic activity',
+                'Absence of microvascular proliferation',
+                'Absence of necrosis',
+
+                # 'A pathology slide with grade II gliomas'
                 ],
-                'A pathology slide with grade III gliomas':
+
+                'A pathology slide with WHO grade III gliomas':
                 [
-                "The cells tend to be more variable in size and shape, and they may show signs of abnormal division (mitotic figures).",
-                "The cells may be arranged in a more irregular pattern and may infiltrate the surrounding brain tissue.",
-                "There may be areas of dead tissue (necrosis) within the tumor."
+                # "Increased cellularity compared to grade II gliomas",
+                # "Mild to moderate nuclear atypia and pleomorphism.",
+                # "Higher mitotic activity compared to grade II gliomas.",
+                # "Absence or minimal microvascular proliferation.",
+                # "Absence or focal necrosis.",
+                "Increased cellularity",
+                "Mild to moderate nuclear atypia and pleomorphism.",
+                "Higher mitotic activity.",
+                "Absence or minimal microvascular proliferation.",
+                "Absence or focal necrosis.",
+
+                # 'A pathology slide with grade III gliomas'
                 ],
-                ' A pathology slide with grade IV gliomas':
+
+                'A pathology slide with WHO grade IV gliomas':
                 [
-                'The cells tend to be highly abnormal in appearance and may be very variable in size and shape, with large, irregular nuclei.',
-                'There may be a high degree of mitotic activity, with many cells dividing rapidly.',
-                'The tumor may have a very irregular border and may infiltrate extensively into the surrounding tissue.'
-                'There may be areas of necrosis within the tumor.'
+                "Highly cellular and pleomorphic tumor cells",
+                "Marked nuclear atypia and pleomorphism.",
+                "High mitotic activity",
+                "Prominent microvascular proliferation",
+                "Presence of necrosis, often with pseudopalisading pattern (tumor cells surrounding necrotic areas).",
+
+                # 'A pathology slide with grade IV gliomas'
                 ]
             }
             caption = list(caption_candidate.values())[int(single_g)]
@@ -242,6 +284,8 @@ class Pathomic_InstanceSample(Dataset):
         if opt.normalization == 'clip':
             normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],std=[0.229, 0.224, 0.225])
         elif opt.normalization == 'biomedclip':
+            normalize = transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
+        elif opt.normalization == 'quiltclip':
             normalize = transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
         elif opt.normalization == 'data':
             normalize = transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
@@ -372,36 +416,96 @@ class Pathomic_InstanceSample(Dataset):
             # else:
             #     tokenized_captions = caption
 
-            if self.opt.text_mode == 'sentence':
-                grading_name = {0: 'II', 1: 'III', 2: 'IV'}
-                # caption = f'A pathology slide with WHO grading {grading_name[ int(single_g) ]}'
-                # templates = ['A pathology slide with grade {} gliomas']
-                caption = f'A pathology slide with grade {grading_name[ int(single_g) ]} gliomas'
-            elif self.opt.text_mode == 'description':
-                caption_candidate = {
-                    'A pathology slide with grade II gliomas':
-                    [
-                    "The cells tend to be relatively uniform in size and shape, and they may be arranged in a pattern that resembles the normal organization of tissue.",
-                    "The cells have a relatively low rate of division (mitotic rate) and may be surrounded by normal brain tissue.",
-                    "The tumor may have a well-defined border between the tumor and the surrounding tissue."
-                    ],
-                    'A pathology slide with grade III gliomas':
-                    [
-                    "The cells tend to be more variable in size and shape, and they may show signs of abnormal division (mitotic figures).",
-                    "The cells may be arranged in a more irregular pattern and may infiltrate the surrounding brain tissue.",
-                    "There may be areas of dead tissue (necrosis) within the tumor."
-                    ],
-                    ' A pathology slide with grade IV gliomas':
-                    [
-                    'The cells tend to be highly abnormal in appearance and may be very variable in size and shape, with large, irregular nuclei.',
-                    'There may be a high degree of mitotic activity, with many cells dividing rapidly.',
-                    'The tumor may have a very irregular border and may infiltrate extensively into the surrounding tissue.'
-                    'There may be areas of necrosis within the tumor.'
-                    ]
-                }
-                caption = list(caption_candidate.values())[int(single_g)]
+            # if self.opt.text_mode == 'sentence':
+            #     grading_name = {0: 'II', 1: 'III', 2: 'IV'}
+            #     # caption = f'A pathology slide with WHO grading {grading_name[ int(single_g) ]}'
+            #     # templates = ['A pathology slide with grade {} gliomas']
+            #     caption = f'A pathology slide with WHO grade {grading_name[ int(single_g) ]} gliomas'
+            # elif self.opt.text_mode == 'description':
+            #     # caption_candidate = {
+            #     #     'A pathology slide with WHO grade II gliomas':
+            #     #     [
+            #     #     # "The cells tend to be relatively uniform in size and shape, and they may be arranged in a pattern that resembles the normal organization of tissue.",
+            #     #     # "The cells have a relatively low rate of division (mitotic rate) and may be surrounded by normal brain tissue.",
+            #     #     # "The tumor may have a well-defined border between the tumor and the surrounding tissue."
 
-            tokenized_captions = self.opt.tokenizer(caption).unsqueeze(0)
+            #     #     'Infiltrative growth pattern',
+            #     #     'Relatively uniform cells with round or oval nuclei and minimal pleomorphism',
+            #     #     'Low mitotic activity',
+            #     #     'Absence of microvascular proliferation',
+            #     #     'Absence of necrosis',
+
+            #     #     ],
+            #     #     'A pathology slide with WHO grade III gliomas':
+            #     #     [
+            #     #     # "The cells tend to be more variable in size and shape, and they may show signs of abnormal division (mitotic figures).",
+            #     #     # "The cells may be arranged in a more irregular pattern and may infiltrate the surrounding brain tissue.",
+            #     #     # "There may be areas of dead tissue (necrosis) within the tumor."
+
+            #     #     "Increased cellularity",
+            #     #     "Mild to moderate nuclear atypia and pleomorphism.",
+            #     #     "Higher mitotic activity.",
+            #     #     "Absence or minimal microvascular proliferation.",
+            #     #     "Absence or focal necrosis.",
+
+            #     #     ],
+            #     #     ' A pathology slide with WHO grade IV gliomas':
+            #     #     [
+            #     #     # 'The cells tend to be highly abnormal in appearance and may be very variable in size and shape, with large, irregular nuclei.',
+            #     #     # 'There may be a high degree of mitotic activity, with many cells dividing rapidly.',
+            #     #     # 'The tumor may have a very irregular border and may infiltrate extensively into the surrounding tissue.'
+            #     #     # 'There may be areas of necrosis within the tumor.'
+
+            #     #     "Highly cellular and pleomorphic tumor cells",
+            #     #     "Marked nuclear atypia and pleomorphism.",
+            #     #     "High mitotic activity",
+            #     #     "Prominent microvascular proliferation",
+            #     #     "Presence of necrosis, often with pseudopalisading pattern (tumor cells surrounding necrotic areas)."
+            #     #     ]
+            #     # }
+                
+            #     caption_candidate = {
+            #         'A pathology slide with WHO grade II gliomas':
+            #         [
+            #         'Infiltrative growth pattern',
+            #         'Relatively uniform cells with round or oval nuclei and minimal pleomorphism',
+            #         'Low mitotic activity',
+            #         'Absence of microvascular proliferation',
+            #         'Absence of necrosis',
+
+            #         # 'A pathology slide with grade II gliomas'
+            #         ],
+
+            #         'A pathology slide with WHO grade III gliomas':
+            #         [
+            #         # "Increased cellularity compared to grade II gliomas",
+            #         # "Mild to moderate nuclear atypia and pleomorphism.",
+            #         # "Higher mitotic activity compared to grade II gliomas.",
+            #         # "Absence or minimal microvascular proliferation.",
+            #         # "Absence or focal necrosis.",
+            #         "Increased cellularity",
+            #         "Mild to moderate nuclear atypia and pleomorphism.",
+            #         "Higher mitotic activity.",
+            #         "Absence or minimal microvascular proliferation.",
+            #         "Absence or focal necrosis.",
+
+            #         # 'A pathology slide with grade III gliomas'
+            #         ],
+
+            #         'A pathology slide with WHO grade IV gliomas':
+            #         [
+            #         "Highly cellular and pleomorphic tumor cells",
+            #         "Marked nuclear atypia and pleomorphism.",
+            #         "High mitotic activity",
+            #         "Prominent microvascular proliferation",
+            #         "Presence of necrosis, often with pseudopalisading pattern (tumor cells surrounding necrotic areas).",
+
+            #         # 'A pathology slide with grade IV gliomas'
+            #         ]
+            #     }
+            #     caption = list(caption_candidate.values())[int(single_g)]
+
+            # tokenized_captions = self.opt.tokenizer(caption)#.unsqueeze(0)
                 
 
         # print("sample index:", index)

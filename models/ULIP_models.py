@@ -385,6 +385,310 @@ class GeneLIP_WITH_BIOMEDCLIP(nn.Module):
                     'omic_embed': omic_embed,
                     'logit_scale': self.logit_scale.exp()}
 
+
+class GeneLIP_WITH_QUILTCLIP(nn.Module):
+    def __init__(self, gene_encoder, vl_model, **kwargs):
+        # super().__init__(ssl_mlp_dim, ssl_emb_dim, **kwargs)
+        super().__init__()
+        kwargs = EasyDict(kwargs)
+        self.context_length = kwargs.context_length
+        self.vision_width = kwargs.vision_width
+        # self.visual = kwargs.vision_model
+
+        self.transformer = Transformer(
+            width=kwargs.transformer_width,
+            layers=kwargs.transformer_layers,
+            heads=kwargs.transformer_heads,
+            attn_mask=self.build_attention_mask(),
+        )
+
+        self.vocab_size = kwargs.vocab_size
+        self.token_embedding = nn.Embedding(kwargs.vocab_size, kwargs.transformer_width)
+        self.positional_embedding = nn.Parameter(torch.empty(self.context_length, kwargs.transformer_width))
+        self.ln_final = LayerNorm(kwargs.transformer_width)
+
+        # self.image_projection = nn.Parameter(torch.empty(kwargs.vision_width, kwargs.embed_dim))
+        self.text_projection = nn.Parameter(torch.empty(kwargs.transformer_width, kwargs.embed_dim))
+        # self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+
+        self.initialize_parameters()
+
+        self.gene_encoder = gene_encoder
+
+        self.gene_projection = nn.Parameter(torch.empty(kwargs.omic_feat_dims, 512))
+        nn.init.normal_(self.gene_projection, std=512 ** -0.5)
+
+        self.image_projection = vl_model.visual.proj
+
+        self.logit_scale = vl_model.logit_scale
+
+        self.visual = vl_model.visual
+        self.visual.proj = None
+        # vision_model = timm.create_model('vit_base_patch32_224', num_classes=0)
+
+
+        self.tune_visual = kwargs.args.tune_visual
+        if self.tune_visual.lower() == 'adapter' :
+            print("Use visual adapter!")
+            self.adapter = Adapter(kwargs.vision_width,4)
+
+    def encode_image(self, image):
+        image_feat = self.visual(image)  #[253,512]
+
+        if self.tune_visual.lower() == 'adapter':
+            x = self.adapter(image_feat)
+            ratio = 0.2
+            image_feat = ratio * x + (1 - ratio) * image_feat
+        
+        x = image_feat @ self.image_projection
+
+        return x
+
+    def encode_text(self, text):
+        # Eval [5,77]   Train [1,5,77]
+        # if len(text.shape) >2:
+        #   text = text.squeeze(0)
+        x = self.token_embedding(text)  # [batch_size, n_ctx, d_model]   torch.Size([5, 77, 512])
+        x = x + self.positional_embedding
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.transformer(x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        x = self.ln_final(x) # 1,77,512
+        # bz, context_length, embed_dim
+
+        # take features from the eot embedding (eot_token is the highest number in each sequence)
+        x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection  # 1,512
+
+        return x
+
+    def build_attention_mask(self):
+        # lazily create causal attention mask, with full attention between the vision tokens
+        # pytorch uses additive attention mask; fill with -inf
+        mask = torch.empty(self.context_length, self.context_length)
+        mask.fill_(float("-inf"))
+        mask.triu_(1)  # zero out the lower diagonal
+        return mask
+
+    def initialize_parameters(self):
+        nn.init.normal_(self.token_embedding.weight, std=0.02)
+        nn.init.normal_(self.positional_embedding, std=0.01)
+
+        proj_std = (self.transformer.width ** -0.5) * ((2 * self.transformer.layers) ** -0.5)
+        attn_std = self.transformer.width ** -0.5
+        fc_std = (2 * self.transformer.width) ** -0.5
+        for block in self.transformer.resblocks:
+            nn.init.normal_(block.attn.in_proj_weight, std=attn_std)
+            nn.init.normal_(block.attn.out_proj.weight, std=proj_std)
+            nn.init.normal_(block.mlp.c_fc.weight, std=fc_std)
+            nn.init.normal_(block.mlp.c_proj.weight, std=proj_std)
+
+        # nn.init.normal_(self.image_projection, std=self.vision_width ** -0.5)
+        nn.init.normal_(self.text_projection, std=self.transformer.width ** -0.5)
+
+    # def encode_pc(self, pc):
+    #     pc_feat = self.point_encoder(pc)
+    #     pc_embed = pc_feat @ self.pc_projection
+    #     return pc_embed
+
+    def encode_omic(self, x_omic):
+        omic_feat = self.gene_encoder(x_omic=x_omic)[0] # featues, out, pred, omic_grads
+        omic_embed = omic_feat @ self.gene_projection # dimension: 128 -> 512
+        return omic_embed
+
+    def forward(self, image, gene, cls_label):
+        # For omic, image ==> torch.Size([1, 3, 512, 512])    
+        # For pc, image ==> torch.Size([1, 3, 224, 224])
+
+        
+        # text_embed_all = []
+        # for i in range(text.shape[0]):  #(1,1,77)
+        #     text_for_one_sample = text[i]
+        #     text_embed = self.encode_text(text_for_one_sample)
+        #     text_embed = text_embed / text_embed.norm(dim=-1, keepdim=True)
+        #     text_embed = text_embed.mean(dim=0)
+        #     text_embed = text_embed / text_embed.norm(dim=-1, keepdim=True)
+        #     text_embed_all.append(text_embed)
+
+        # text_embed_all = torch.stack(text_embed_all)
+
+        '''
+        07/15 adjusted from pc to omic
+        '''
+        # pc_embed = self.encode_pc(pc)
+        # omic_embed = self.encode_omic(x_omic)
+        
+        image_embed = self.encode_image(image)
+        image_embed = image_embed / image_embed.norm(dim=-1, keepdim=True)
+
+        # pc_embed = self.encode_pc(pc)
+        # omic_embed = self.encode_omic(x_omic)
+
+        return { 
+              'image_embed': image_embed,
+              'gene_embed': None,
+              'logit_scale': self.logit_scale.exp()
+                }
+
+
+# class GeneLIP_WITH_QUILTCLIP(nn.Module):
+#     def __init__(self, gene_encoder, **kwargs):
+#         # super().__init__(ssl_mlp_dim, ssl_emb_dim, **kwargs)
+#         super().__init__()
+
+#         kwargs = EasyDict(kwargs)
+#         self.kwargs = kwargs
+#         # self.context_length = kwargs.context_length
+#         # self.vision_width = kwargs.vision_width
+
+#         # self.visual = kwargs.vision_model
+#         # self.text = kwargs.text_model
+
+#         self.visual = kwargs.vl_model.visual # trucnk + head
+#         self.image_projection = self.visual.proj
+
+
+#         self.transformer = kwargs.vl_model.transformer
+#         self.token_embedding = kwargs.vl_model.token_embedding
+#         self.positional_embedding = kwargs.vl_model.positional_embedding
+#         self.ln_final = kwargs.vl_model.ln_final
+
+#         self.text_projection = kwargs.vl_model.text_projection
+
+
+#         # self.transformer = Transformer(
+#         #     width=kwargs.transformer_width,
+#         #     layers=kwargs.transformer_layers,
+#         #     heads=kwargs.transformer_heads,
+#         #     attn_mask=self.build_attention_mask(),
+#         # ) 
+  
+
+#         # self.vocab_size = kwargs.vocab_size
+#         # self.token_embedding = nn.Embedding(kwargs.vocab_size, kwargs.transformer_width)
+#         # self.positional_embedding = nn.Parameter(torch.empty(self.context_length, kwargs.transformer_width))
+#         # self.ln_final = LayerNorm(kwargs.transformer_width)
+
+#         # self.image_projection = nn.Parameter(torch.empty(kwargs.vision_width, kwargs.embed_dim)) # 768 -> 512
+#         # self.text_projection = nn.Parameter(torch.empty(kwargs.transformer_width, kwargs.embed_dim)) # 512 -> 512
+
+#         # self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+
+#         # self.image_encoder = self.visual
+#         # self.text_encoder = self.text.transformer
+
+        
+#         # self.text_projection = self.text.proj
+#         self.logit_scale = kwargs.vl_model.logit_scale
+
+#         # self.initialize_parameters()
+
+#         self.gene_encoder = gene_encoder
+
+#         self.gene_projection = nn.Parameter(torch.empty(kwargs.omic_feat_dims, 512))
+#         nn.init.normal_(self.gene_projection, std=512 ** -0.5)
+
+#         self.tune_visual = kwargs.args.tune_visual
+#         if self.tune_visual.lower() == 'adapter' :
+#             print("Use visual adapter!")
+#             self.adapter = Adapter(kwargs.vision_width,4)
+
+
+#     def encode_image(self, image):
+#         image_feat = self.visual(image)
+
+#         if self.tune_visual.lower() == 'adapter':
+#             x = self.adapter(image_feat)
+#             ratio = 0.2
+#             image_feat = ratio * x + (1 - ratio) * image_feat
+        
+#         x = image_feat @ self.image_projection
+#         # x = self.image_projection( image_feat)
+
+#         return x
+
+#     def encode_text(self, text):
+#         x = self.token_embedding(text)  # [batch_size, n_ctx, d_model]   torch.Size([5, 77, 512])
+#         x = x + self.positional_embedding
+#         x = x.permute(1, 0, 2)  # NLD -> LND
+#         x = self.transformer(x)
+#         x = x.permute(1, 0, 2)  # LND -> NLD
+#         x = self.ln_final(x) # 1,77,512
+
+#         # take features from the eot embedding (eot_token is the highest number in each sequence)
+#         x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection
+
+
+#         return x
+
+#     def build_attention_mask(self):
+#         # lazily create causal attention mask, with full attention between the vision tokens
+#         # pytorch uses additive attention mask; fill with -inf
+#         mask = torch.empty(self.context_length, self.context_length)
+#         mask.fill_(float("-inf"))
+#         mask.triu_(1)  # zero out the lower diagonal
+#         return mask
+
+#     def initialize_parameters(self):
+#         nn.init.normal_(self.token_embedding.weight, std=0.02)
+#         nn.init.normal_(self.positional_embedding, std=0.01)
+
+#         proj_std = (self.transformer.width ** -0.5) * ((2 * self.transformer.layers) ** -0.5)
+#         attn_std = self.transformer.width ** -0.5
+#         fc_std = (2 * self.transformer.width) ** -0.5
+#         for block in self.transformer.resblocks:
+#             nn.init.normal_(block.attn.in_proj_weight, std=attn_std)
+#             nn.init.normal_(block.attn.out_proj.weight, std=proj_std)
+#             nn.init.normal_(block.mlp.c_fc.weight, std=fc_std)
+#             nn.init.normal_(block.mlp.c_proj.weight, std=proj_std)
+
+#         nn.init.normal_(self.image_projection, std=self.vision_width ** -0.5)
+#         nn.init.normal_(self.text_projection, std=self.transformer.width ** -0.5)
+
+#     # def encode_pc(self, pc):
+#     #     pc_feat = self.point_encoder(pc)
+#     #     pc_embed = pc_feat @ self.pc_projection
+#     #     return pc_embed
+
+#     def encode_omic(self, x_omic):
+#         omic_feat = self.gene_encoder(x_omic=x_omic)[0]
+#         omic_embed = omic_feat @ self.gene_projection
+#         return omic_embed
+
+#     def forward(self, x_omic, text, image=None):
+#         # For omic, image ==> torch.Size([1, 3, 512, 512])    
+#         # For pc, image ==> torch.Size([1, 3, 224, 224])
+    
+#         text_embed_all = []
+#         for i in range(text.shape[0]):  #(1,1,77)
+#             text_for_one_sample = text[i]
+#             text_embed = self.encode_text(text_for_one_sample)
+#             text_embed = text_embed / text_embed.norm(dim=-1, keepdim=True)
+#             text_embed = text_embed.mean(dim=0)
+#             text_embed = text_embed / text_embed.norm(dim=-1, keepdim=True)
+#             text_embed_all.append(text_embed)
+
+#         text_embed_all = torch.stack(text_embed_all)
+
+#         '''
+#         07/15 adjusted from pc to omic
+#         '''
+#         # pc_embed = self.encode_pc(pc)
+#         omic_embed = self.encode_omic(x_omic)
+        
+
+#         if image is not None:
+#             image_embed = self.encode_image(image)
+#             return {'text_embed': text_embed_all,
+#                     'omic_embed': omic_embed,
+#                     'image_embed': image_embed,
+#                     'logit_scale': self.logit_scale.exp()}
+
+#         else:
+#             return {'text_embed': text_embed_all,
+#                     'omic_embed': omic_embed,
+#                     'logit_scale': self.logit_scale.exp()}
+
+
 class GeneLIP_WITH_MIZERO(nn.Module):
     def __init__(self, gene_encoder, **kwargs):
         # super().__init__(ssl_mlp_dim, ssl_emb_dim, **kwargs)
@@ -694,7 +998,8 @@ class ULIP_WITH_IMAGE(nn.Module):
 
 def get_loss(args):
     # return losses.ULIPWithImageLoss()
-    return losses.GeneLIPWithImageLoss(args)
+    # return losses.GeneLIPWithImageLoss(args)
+    return losses.CITEImageLoss(args)
 
 
 def get_metric_names(model):
@@ -1107,6 +1412,118 @@ def ULIP_GENE_SNN_BiomedCLIP(args):
         if param.requires_grad:
             print('Update parameters {}'.format(name))
   
+  
+
+    return model
+
+
+def ULIP_GENE_SNN_QuiltCLIP(args):
+    # vision_model = timm.create_model('vit_base_patch16_224', num_classes=0)
+    # =====================================================================
+    # import the 3D backbone and specify the output point cloud feature dimension
+    # from models.pointmlp.pointMLP import pointMLP
+    # point_encoder = pointMLP()
+    # pc_feat_dims = 256
+    # =====================================================================
+
+
+    biomedclip, preprocess_train, preprocess_val = open_clip.create_model_and_transforms('hf-hub:wisdomik/QuiltNet-B-32')
+    tokenizer = open_clip.get_tokenizer('hf-hub:wisdomik/QuiltNet-B-32')
+
+    # Compose(
+    # RandomResizedCrop(size=(224, 224), scale=(0.9, 1.0), ratio=(0.75, 1.3333), interpolation=bicubic)
+    # <function _convert_to_rgb at 0x7f64da8a1a70>
+    # ToTensor()
+    # Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
+    # )
+    # Compose(
+    # Resize(size=224, interpolation=bicubic, max_size=None, antialias=None)
+    # CenterCrop(size=(224, 224))
+    # <function _convert_to_rgb at 0x7f64da8a1a70>
+    # ToTensor()
+    # Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
+    # )
+
+    for name, param in biomedclip.named_parameters():
+        print('parameters {}'.format(name))
+  
+    from models.gene.SNN import SNN
+    omic_feat_dims = 128
+
+    snn = SNN()
+
+    # vision_model = timm.create_model('vit_base_patch32_224', num_classes=0)
+
+
+    model = GeneLIP_WITH_QUILTCLIP(embed_dim=512, vision_width=768, 
+                            gene_encoder=snn, 
+                            vl_model=biomedclip,
+                            context_length=77, vocab_size=49408,
+                            transformer_width=512, transformer_heads=8, transformer_layers=12, 
+                            omic_feat_dims=omic_feat_dims, args=args)
+
+
+    # if not args.ori_biomedclip:
+    #     print('###### Embed Quilt into ULIP framework')
+
+    # GeneLIP_WITH_IMAGE
+
+    # model = GeneLIP_WITH_QUILTCLIP(
+    #     embed_dim=512, 
+    #     # vision_width=768, 
+    #     gene_encoder=snn, 
+    #     vl_model=biomedclip,
+    #     # vision_model=biomedclip.visual,
+    #     # text_model = biomedclip.text,
+    #     # context_length=77, vocab_size=49408,
+    #     # transformer_width=512, transformer_heads=8, transformer_layers=12, 
+    #     omic_feat_dims=omic_feat_dims, 
+    #     args=args)
+    # else:
+    #     print('##### Use whole BioMedCLIP in an original fashion.. ')
+    #     model = biomedclip 
+
+    if not args.evaluate:
+        # load the pretrained model
+        
+        # pretrain_slip_model = torch.load('./data/initialize_models/slip_base_100ep.pt', map_location=torch.device('cpu'))
+        pretrain_slip_model_params = biomedclip.state_dict()
+        # pretrain_slip_model_params = pretrain_slip_model['state_dict']
+        pretrain_slip_model_params = {param_name.replace('module.', ''): param for param_name, param in
+                                      pretrain_slip_model_params.items()}
+        '''
+        visual encoder没有载入....
+        '''
+        
+        for name, param in model.named_parameters(): # 把slip的参数往
+            # if 'visual' in name:
+            #     pass
+            #     print('a')
+            if name not in pretrain_slip_model_params:
+                continue
+
+            if isinstance(pretrain_slip_model_params[name], Parameter):
+                param_new = pretrain_slip_model_params[name].data
+            else:
+                param_new = pretrain_slip_model_params[name]
+
+            param.requires_grad = False
+            print('load {} and freeze'.format(name))
+            param.data.copy_(param_new)
+
+        for name, param in model.named_parameters(): # 把slip的参数往
+              if 'gene' in name or 'omic' in name:
+                  param.requires_grad = True
+              else:
+                  param.requires_grad = False
+
+        for name, param in model.named_parameters():
+          if not param.requires_grad:
+              print('Freeze parameters {}'.format(name))
+                  
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                print('Update parameters {}'.format(name))
   
 
     return model
