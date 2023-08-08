@@ -511,9 +511,6 @@ class GeneLIP_WITH_QUILTCLIP(nn.Module):
 
         # text_embed_all = torch.stack(text_embed_all)
 
-        '''
-        07/15 adjusted from pc to omic
-        '''
         # pc_embed = self.encode_pc(pc)
         # omic_embed = self.encode_omic(x_omic)
         
@@ -1005,7 +1002,8 @@ def get_loss(args):
 def get_metric_names(model):
     # return ['loss', 'ulip_loss', 'ulip_pc_image_acc', 'ulip_pc_text_acc']
     # return ['loss', 'ulip_loss', 'ulip_omic_image_acc', 'ulip_omic_text_acc']
-    return ['loss', 'ulip_loss', 'ulip_omic_image_matching_acc', 'ulip_omic_text_matching_acc', 'ulip_image_text_matching_acc']
+    # return ['loss', 'ulip_loss', 'ulip_omic_image_matching_acc', 'ulip_omic_text_matching_acc', 'ulip_image_text_matching_acc']
+    return ['loss', 'image_text_matching_acc']
 
 # {'loss': loss, 'ulip_loss': loss, 'ulip_omic_image_matching_acc': omic_image_acc, 'ulip_omic_text_matching_acc': omic_text_acc, 'ulip_image_text_matching_acc': image_text_acc}
 
@@ -1512,18 +1510,18 @@ def ULIP_GENE_SNN_QuiltCLIP(args):
             param.data.copy_(param_new)
 
         for name, param in model.named_parameters(): # 把slip的参数往
-              if 'gene' in name or 'omic' in name:
+              if 'gene' in name or 'omic' in name or 'adapter' in name:
                   param.requires_grad = True
               else:
                   param.requires_grad = False
 
-        for name, param in model.named_parameters():
-          if not param.requires_grad:
-              print('Freeze parameters {}'.format(name))
+        # for name, param in model.named_parameters():
+        #   if not param.requires_grad:
+        #       print('Freeze parameters {}'.format(name))
                   
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                print('Update parameters {}'.format(name))
+        # for name, param in model.named_parameters():
+        #     if param.requires_grad:
+        #         print('Update parameters {}'.format(name))
   
 
     return model

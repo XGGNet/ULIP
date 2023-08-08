@@ -43,6 +43,7 @@ from sklearn.metrics import average_precision_score, f1_score, roc_auc_score, re
 import open_clip
 
 from transformers import AutoTokenizer
+import datetime
 
 
 def get_args_parser():
@@ -285,9 +286,8 @@ def get_args_parser():
 
     parser.add_argument('--half_label_and_pair', action='store_true', default=False)
 
+    parser.add_argument('--debug', action='store_true', default=False)
 
-
-    
 
     return parser
 
@@ -295,10 +295,17 @@ best_acc1 = 0
 
 def main(args):
 
-
     utils.init_distributed_mode(args)
-
     global best_acc1
+
+    if args.debug:
+        args.workers = 0
+        time_stamp = 'debug'
+    else:
+        # 用年月日时间命名文件
+        time_stamp = datetime.datetime.now().strftime('%m-%d_%H-%M-%S')
+
+    args.output_dir = os.path.join(args.output_dir, args.text_mode + f'{time_stamp}')
 
     if utils.is_main_process() and args.wandb:
         wandb_id = os.path.split(args.output_dir)[-1]
@@ -346,12 +353,21 @@ def main(args):
         # define loss function (criterion) and optimizer
         # criterion = models.get_loss(args).cuda(args.gpu)
 
+        print('\n==> Print weights in optimizer')
+
+        for n, p in model.named_parameters():
+            if p.requires_grad:
+                print('Learn {}'.format(n))
+        for n, p in model.named_parameters():
+            if not p.requires_grad:
+                print('Freeze {}'.format(n)) 
+
         p_wd, p_non_wd = [], []
         for n, p in model.named_parameters():
             if not p.requires_grad:
-                print('in optimizer freeze {}'.format(n))
+                # print('Frozen {}'.format(n))
                 continue  # frozen weights
-            print('update parameters {}'.format(n)) 
+            # print('Learnable {}'.format(n)) 
             # 原始版本 ~ 观察到只更新 point_encoder部分 
             if p.ndim < 2 or 'bias' in n or 'ln' in n or 'bn' in n:
                 p_non_wd.append(p)
@@ -448,23 +464,23 @@ def main(args):
         train_dataset, test_dataset, n_data = pathomic_dataset(args, data) 
         # len(train_dataset) = 1072, len(test_dataset) = 253
         data_patches = data_cv_splits_patches[k]
+
         test_patches_dataset = pathomic_patches_dataset(args, data_patches)
         # len(test_patches_dataset) = 2277
 
-        if args.train_bz > len(train_dataset):
-            args.train_bz = len(train_dataset)
-        if args.test_bz > len(test_dataset):
-            args.test_bz = len(test_dataset)
-
-        '''
-        Temporary comments for debug
-        '''
         if args.test_mode == 'full':
             val_dataset = test_dataset
         elif args.test_mode == 'patch' or args.test_mode == 'patches':
             val_dataset = test_patches_dataset
         else:
             raise ValueError('Invalid test mode')
+
+        if args.train_bz > len(train_dataset):
+            args.train_bz = len(train_dataset)
+            
+        if args.test_bz > len(val_dataset):
+            args.test_bz = len(val_dataset)
+
         
         # val_dataset = test_patches_dataset # 在patches上测试
         # val_dataset = test_dataset
@@ -512,78 +528,116 @@ def main(args):
 
         print(args)
 
-        print("=> beginning training")
+        print("=> beginning creating text classifiers")
+        
+        labels = ['II', 'III', 'IV']
+        if args.text_mode == 'sentence':
+            templates = ['A pathology slide with WHO grade {} gliomas'] 
+        if args.text_mode == 'description':
 
+            # caption_candidate = {
+            #     'A pathology slide with grade II gliomas':
+            #     [
+            #     "The cells tend to be relatively uniform in size and shape, and they may be arranged in a pattern that resembles the normal organization of tissue.",
+            #     "The cells have a relatively low rate of division (mitotic rate) and may be surrounded by normal brain tissue.",
+            #     "The tumor may have a well-defined border between the tumor and the surrounding tissue.",
+            #     'A pathology slide with grade II gliomas'
+            #     ],
+            #     'A pathology slide with grade III gliomas':
+            #     [
+            #     "The cells tend to be more variable in size and shape, and they may show signs of abnormal division (mitotic figures).",
+            #     "The cells may be arranged in a more irregular pattern and may infiltrate the surrounding brain tissue.",
+            #     "There may be areas of dead tissue (necrosis) within the tumor.",
+            #     'A pathology slide with grade III gliomas'
+            #     ],
+            #     'A pathology slide with grade IV gliomas':
+            #     [
+            #     'The cells tend to be highly abnormal in appearance and may be very variable in size and shape, with large, irregular nuclei.',
+            #     'There may be a high degree of mitotic activity, with many cells dividing rapidly.',
+            #     'The tumor may have a very irregular border and may infiltrate extensively into the surrounding tissue.',
+            #     'There may be areas of necrosis within the tumor.',
+            #     'A pathology slide with grade IV gliomas'
+            #     ]
+            # }
 
-        # if args.text_mode == 'sentence':
-        #     grading_name = {0: 'II', 1: 'III', 2: 'IV'}
-        #     caption_candidates = [f'A pathology slide with WHO grade {grading_name[ i ]} gliomas' for i in range(3) ]
-        #     tokenized_captions = tokenizer(caption)#.unsqueeze(0)
-        # elif args.text_mode == 'description':
-        #     caption_candidates = {
-        #         'A pathology slide with WHO grade II gliomas':
-        #         [
-        #         'Infiltrative growth pattern',
-        #         'Relatively uniform cells with round or oval nuclei and minimal pleomorphism',
-        #         'Low mitotic activity',
-        #         'Absence of microvascular proliferation',
-        #         'Absence of necrosis',
+            caption_candidate = {
+                'A pathology slide with WHO grade II gliomas':
+                [
+                'Infiltrative growth pattern',
+                'Relatively uniform cells with round or oval nuclei and minimal pleomorphism',
+                'Low mitotic activity',
+                'Absence of microvascular proliferation',
+                'Absence of necrosis',
 
-        #         # 'A pathology slide with grade II gliomas'
-        #         ],
+                # 'A pathology slide with grade II gliomas'
+                ],
 
-        #         'A pathology slide with WHO grade III gliomas':
-        #         [
-        #         # "Increased cellularity compared to grade II gliomas",
-        #         # "Mild to moderate nuclear atypia and pleomorphism.",
-        #         # "Higher mitotic activity compared to grade II gliomas.",
-        #         # "Absence or minimal microvascular proliferation.",
-        #         # "Absence or focal necrosis.",
-        #         "Increased cellularity",
-        #         "Mild to moderate nuclear atypia and pleomorphism.",
-        #         "Higher mitotic activity.",
-        #         "Absence or minimal microvascular proliferation.",
-        #         "Absence or focal necrosis.",
+                'A pathology slide with WHO grade III gliomas':
+                [
+                # "Increased cellularity compared to grade II gliomas",
+                # "Mild to moderate nuclear atypia and pleomorphism.",
+                # "Higher mitotic activity compared to grade II gliomas.",
+                # "Absence or minimal microvascular proliferation.",
+                # "Absence or focal necrosis.",
+                "Increased cellularity",
+                "Mild to moderate nuclear atypia and pleomorphism.",
+                "Higher mitotic activity.",
+                "Absence or minimal microvascular proliferation.",
+                "Absence or focal necrosis.",
 
-        #         # 'A pathology slide with grade III gliomas'
-        #         ],
+                # 'A pathology slide with grade III gliomas'
+                ],
 
-        #         'A pathology slide with WHO grade IV gliomas':
-        #         [
-        #         "Highly cellular and pleomorphic tumor cells",
-        #         "Marked nuclear atypia and pleomorphism.",
-        #         "High mitotic activity",
-        #         "Prominent microvascular proliferation",
-        #         "Presence of necrosis, often with pseudopalisading pattern (tumor cells surrounding necrotic areas).",
+                'A pathology slide with WHO grade IV gliomas':
+                [
+                "Highly cellular and pleomorphic tumor cells",
+                "Marked nuclear atypia and pleomorphism.",
+                "High mitotic activity",
+                "Prominent microvascular proliferation",
+                "Presence of necrosis, often with pseudopalisading pattern (tumor cells surrounding necrotic areas).",
 
-        #         # 'A pathology slide with grade IV gliomas'
-        #         ]
-        #     }
-        #     # caption = list(caption_candidate.values())[int(single_g)]
-        #     tokenized_captions = OrderedDict()
-        #     for k, v in caption_candidates.items():
-        #         tokenized_captions[k] = tokenizer(v)    
+                # 'A pathology slide with grade IV gliomas'
+                ]
+            }
+            # 把key的字符串加在其value的每一个字符串前面
+            # caption_candidate = {k: [k + ', which has ' + i for i in v] for k, v in caption_candidate.items()}
 
-        # args.tokenized_captions = tokenized_captions
+        model.eval()
+        with torch.no_grad():
+                
+            if args.text_mode == 'sentence':
+                texts = [templates[0].format(l) for l in labels]
+                # texts.app[t.format(l) for t in templates]
+                texts = tokenizer(texts).cuda()
+                text_features =  utils.get_model(model).encode_text(texts)
+                text_features = text_features / text_features.norm(dim=-1, keepdim=True)
 
+                args.text_features = text_features
+
+            elif args.text_mode == 'description':
+                text_description_features = OrderedDict()
+                for k, v in caption_candidate.items():
+                    tokens = tokenizer(v).cuda() #[5,77]
+                    description_features = utils.get_model(model).encode_text(tokens)
+                    description_features = description_features / description_features.norm(dim=-1, keepdim=True)
+                    text_description_features[ k ]  =  description_features #[5,512]
+                    # 3 * [5,512]
+            
+                args.text_description_features = text_description_features
+
+    criterion = models.get_loss(args).cuda(args.gpu)
 
     best_epoch = -1
     best_ap = 0
     best_auc = 0
 
+    print("=> beginning training")
+
     for epoch in range(args.start_epoch, args.epochs):
 
-        '''
-        Temp debug
-        '''
-        if epoch == args.start_epoch:
-            val_stats = test_zeroshot_pathomic_core(val_loader, model, tokenizer, args) 
-            criterion = models.get_loss(args).cuda(args.gpu)
-
-        '''
-        text_mode = description的时候, train里可能会报错..
-        跑的
-        '''
+        # if epoch == args.start_epoch:
+        #     val_stats = test_zeroshot_pathomic_core(val_loader, model, tokenizer, args) 
+            
 
         if args.distributed:
             train_sampler.set_epoch(epoch)
@@ -691,14 +745,14 @@ def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule,
 
         inputs = [tensor.cuda(args.gpu, non_blocking=True) for tensor in [x_path, x_omic, grade] ]
 
-        inputs = {'images': inputs[0], 'gene': inputs[1], 'cls_label': inputs[2]} # torch.Size([1072, 1, 3, 77])  # torch.Size([1072, 1, 3, 77])
+        # inputs = {'images': inputs[0], 'gene': inputs[1], 'cls_label': inputs[2]} # torch.Size([1072, 1, 3, 77])  # torch.Size([1072, 1, 3, 77])
 
 
         # compute output
         with amp.autocast(enabled=not args.disable_amp):
 
             outputs = model(*inputs)
-            outputs['cls_label'] = grade
+            outputs['cls_label'] = grade.cuda(args.gpu, non_blocking=True)
             loss_dict = criterion(outputs)
             loss = loss_dict['loss']
             loss /= args.update_freq
@@ -756,7 +810,7 @@ def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule,
             'logit_scale': logit_scale}
 
 
-def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
+def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args):
     batch_time = AverageMeter('Time', ':6.3f')
     
     omic_top1 = AverageMeter('Acc@1', ':6.2f')
@@ -780,7 +834,7 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
 
     progress = ProgressMeter(
     len(test_loader)*sw_ratio * sw_ratio,
-    [batch_time, omic_top1],
+    [batch_time, path_top1],
     prefix='Test: ')
 
 
@@ -810,75 +864,6 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
     # # caption = f'A pathology slide with WHO grading {grading_name[ int(single_g) ]} '
     # caption = f'WHO grading {grading_name[ int(single_g) ]}'
 
-    labels = ['II', 'III', 'IV']
-    if args.text_mode == 'sentence':
-        templates = ['A pathology slide with WHO grade {} gliomas'] 
-    if args.text_mode == 'description':
-
-        # caption_candidate = {
-        #     'A pathology slide with grade II gliomas':
-        #     [
-        #     "The cells tend to be relatively uniform in size and shape, and they may be arranged in a pattern that resembles the normal organization of tissue.",
-        #     "The cells have a relatively low rate of division (mitotic rate) and may be surrounded by normal brain tissue.",
-        #     "The tumor may have a well-defined border between the tumor and the surrounding tissue.",
-        #     'A pathology slide with grade II gliomas'
-        #     ],
-        #     'A pathology slide with grade III gliomas':
-        #     [
-        #     "The cells tend to be more variable in size and shape, and they may show signs of abnormal division (mitotic figures).",
-        #     "The cells may be arranged in a more irregular pattern and may infiltrate the surrounding brain tissue.",
-        #     "There may be areas of dead tissue (necrosis) within the tumor.",
-        #     'A pathology slide with grade III gliomas'
-        #     ],
-        #     'A pathology slide with grade IV gliomas':
-        #     [
-        #     'The cells tend to be highly abnormal in appearance and may be very variable in size and shape, with large, irregular nuclei.',
-        #     'There may be a high degree of mitotic activity, with many cells dividing rapidly.',
-        #     'The tumor may have a very irregular border and may infiltrate extensively into the surrounding tissue.',
-        #     'There may be areas of necrosis within the tumor.',
-        #     'A pathology slide with grade IV gliomas'
-        #     ]
-        # }
-
-        caption_candidate = {
-            'A pathology slide with WHO grade II gliomas':
-            [
-            'Infiltrative growth pattern',
-            'Relatively uniform cells with round or oval nuclei and minimal pleomorphism',
-            'Low mitotic activity',
-            'Absence of microvascular proliferation',
-            'Absence of necrosis',
-
-            # 'A pathology slide with grade II gliomas'
-            ],
-
-            'A pathology slide with WHO grade III gliomas':
-            [
-            # "Increased cellularity compared to grade II gliomas",
-            # "Mild to moderate nuclear atypia and pleomorphism.",
-            # "Higher mitotic activity compared to grade II gliomas.",
-            # "Absence or minimal microvascular proliferation.",
-            # "Absence or focal necrosis.",
-            "Increased cellularity",
-            "Mild to moderate nuclear atypia and pleomorphism.",
-            "Higher mitotic activity.",
-            "Absence or minimal microvascular proliferation.",
-            "Absence or focal necrosis.",
-
-            # 'A pathology slide with grade III gliomas'
-            ],
-
-            'A pathology slide with WHO grade IV gliomas':
-            [
-            "Highly cellular and pleomorphic tumor cells",
-            "Marked nuclear atypia and pleomorphism.",
-            "High mitotic activity",
-            "Prominent microvascular proliferation",
-            "Presence of necrosis, often with pseudopalisading pattern (tumor cells surrounding necrotic areas).",
-
-            # 'A pathology slide with grade IV gliomas'
-            ]
-        }
 
 
     with torch.no_grad():
@@ -908,27 +893,6 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
         utils.get_model(model).logit_scale.data.clamp_(0, 4.6052) # 4.3307  |  4.4696
         logit_scale = utils.get_model(model).logit_scale.exp().item() # 76.0 | 87
 
-
-        if args.text_mode == 'sentence':
-            texts = [templates[0].format(l) for l in labels]
-            # texts.app[t.format(l) for t in templates]
-            texts = tokenizer(texts).cuda()
-            text_features =  utils.get_model(model).encode_text(texts)
-            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-
-            args.text_features = text_features
-
-        elif args.text_mode == 'description':
-            text_description_features = OrderedDict()
-            for k, v in caption_candidate.items():
-                tokens = tokenizer(v).cuda() #[5,77]
-                description_features = utils.get_model(model).encode_text(tokens)
-                description_features = description_features / description_features.norm(dim=-1, keepdim=True)
-                text_description_features[ k ]  =  description_features #[5,512]
-                # 3 * [5,512]
-        
-            args.text_description_features = text_description_features
-
         end = time.time()
         per_class_stats = collections.defaultdict(int)
 
@@ -937,6 +901,12 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args=None):
         mm_per_class_correct_top1 = collections.defaultdict(int)
         
         # per_class_correct_top5 = collections.defaultdict(int)
+
+        if args.text_mode == 'sentence':
+            text_features = args.text_features
+        elif args.text_mode == 'description':
+            text_description_features = args.text_description_features
+        
 
         for i, inputs in enumerate(test_loader):
             # (pc, target, target_name)

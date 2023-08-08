@@ -224,7 +224,7 @@ class CITEImageLoss(nn.Module):
         #     utils.all_gather_batch([omic_embed, text_embed, image_embed])
 
         image_embed_all = \
-        utils.all_gather_batch([image_embed])
+        utils.all_gather_batch(image_embed)
 
         # cosine similarity as logits
         # logits_per_omic_text = logit_scale * omic_embed @ text_embed_all.t()
@@ -240,11 +240,11 @@ class CITEImageLoss(nn.Module):
 
         # Cross-entropy
         if self.args.text_mode == 'sentence':
-            logits = (logit_scale * path_features @ text_features.t())
+            logits = (logit_scale * image_embed_all @ self.text_features.t())
         elif self.args.text_mode == 'description':
             logits =  torch.zeros((local_batch_size, len(text_description_features))).cuda() # [B,3]
-            for k, text_features in text_description_features.items():
-                logits[:, list(caption_candidate.keys()).index(k) ] = (logit_scale * path_features @ text_features.t()).mean(dim=-1)
+            for k, text_embed in self.text_description_features.items():
+                logits[:, list(caption_candidate.keys()).index(k) ] = (logit_scale * image_embed_all @ text_embed.t()).mean(dim=-1)
 
         text_cls_loss = F.cross_entropy(logits, cls_label)
         loss = text_cls_loss
