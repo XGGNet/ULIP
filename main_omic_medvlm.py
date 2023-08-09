@@ -640,7 +640,6 @@ def main(args):
         # if epoch == args.start_epoch:
         #     val_stats = test_zeroshot_pathomic_core(val_loader, model, tokenizer, args) 
             
-
         if args.distributed:
             train_sampler.set_epoch(epoch)
 
@@ -650,7 +649,6 @@ def main(args):
         if epoch % 1 == 0:
 
             val_stats = test_zeroshot_pathomic_core(val_loader, model, tokenizer, args)
-
             main_modality = ['omic', 'path', 'mm'][1]# image is the main mod
 
             print(val_stats)
@@ -735,11 +733,6 @@ def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule,
             param_group['lr'] = lr_schedule[it]
 
         # (x_path, x_grph, x_omic, censor, survtime, grade, index, sample_idx) = inputs
-
-        '''
-        TimeStamp
-        '''
-
         # pc = inputs[3] # (8092,3)train
         # texts = inputs[2] # 从大类里找个 Only类别名 文本
 

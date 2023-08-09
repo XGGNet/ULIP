@@ -29,6 +29,8 @@ from thop import profile
 
 import pandas as pd
 
+# from coop import *
+
 
 class LayerNorm(nn.LayerNorm):
     """Subclass torch's LayerNorm to handle fp16."""
@@ -432,6 +434,14 @@ class GeneLIP_WITH_QUILTCLIP(nn.Module):
             print("Use visual adapter!")
             self.adapter = Adapter(kwargs.vision_width,4)
 
+        
+        # self.text_prompt = self.args.text_prompt
+
+        # if self.text_prompt:
+        #     self.prompt_learner = PromptLearner(cfg, classnames, clip_model)
+        #     self.tokenized_prompts = self.prompt_learner.tokenized_prompts
+
+
     def encode_image(self, image):
         image_feat = self.visual(image)  #[253,512]
 
@@ -517,173 +527,149 @@ class GeneLIP_WITH_QUILTCLIP(nn.Module):
         image_embed = self.encode_image(image)
         image_embed = image_embed / image_embed.norm(dim=-1, keepdim=True)
 
+        # if self.text_prompt:
+        #     prompts = self.prompt_learner()
+        #     tokenized_prompts = self.tokenized_prompts
+        #     text_embed = self.encode_text(prompts, tokenized_prompts)
+        #     text_embed = text_embed / text_embed.norm(dim=-1, keepdim=True)
+
         # pc_embed = self.encode_pc(pc)
         # omic_embed = self.encode_omic(x_omic)
 
         return { 
               'image_embed': image_embed,
+              'text_embed': text_embed,
               'gene_embed': None,
               'logit_scale': self.logit_scale.exp()
                 }
 
 
-# class GeneLIP_WITH_QUILTCLIP(nn.Module):
-#     def __init__(self, gene_encoder, **kwargs):
-#         # super().__init__(ssl_mlp_dim, ssl_emb_dim, **kwargs)
-#         super().__init__()
+class PromptLearner(nn.Module):
+    def __init__(self, cfg, classnames, clip_model):
+        super().__init__()
+        n_cls = len(classnames)
+        n_ctx = cfg.TRAINER.COOP.N_CTX
+        ctx_init = cfg.TRAINER.COOP.CTX_INIT
+        dtype = clip_model.dtype
+        ctx_dim = clip_model.ln_final.weight.shape[0]
+        clip_imsize = clip_model.visual.input_resolution
+        cfg_imsize = cfg.INPUT.SIZE[0]
+        assert cfg_imsize == clip_imsize, f"cfg_imsize ({cfg_imsize}) must equal to clip_imsize ({clip_imsize})"
 
-#         kwargs = EasyDict(kwargs)
-#         self.kwargs = kwargs
-#         # self.context_length = kwargs.context_length
-#         # self.vision_width = kwargs.vision_width
+        if ctx_init:
+            # use given words to initialize context vectors
+            ctx_init = ctx_init.replace("_", " ")
+            n_ctx = len(ctx_init.split(" "))
+            prompt = clip.tokenize(ctx_init)
+            with torch.no_grad():
+                embedding = clip_model.token_embedding(prompt).type(dtype)
+            ctx_vectors = embedding[0, 1 : 1 + n_ctx, :]
+            prompt_prefix = ctx_init
 
-#         # self.visual = kwargs.vision_model
-#         # self.text = kwargs.text_model
+        else:
+            # random initialization
+            if cfg.TRAINER.COOP.CSC:
+                print("Initializing class-specific contexts")
+                ctx_vectors = torch.empty(n_cls, n_ctx, ctx_dim, dtype=dtype)
+            else:
+                print("Initializing a generic context")
+                ctx_vectors = torch.empty(n_ctx, ctx_dim, dtype=dtype)
+            nn.init.normal_(ctx_vectors, std=0.02)
+            prompt_prefix = " ".join(["X"] * n_ctx)
 
-#         self.visual = kwargs.vl_model.visual # trucnk + head
-#         self.image_projection = self.visual.proj
+        print(f'Initial context: "{prompt_prefix}"')
+        print(f"Number of context words (tokens): {n_ctx}")
+
+        self.ctx = nn.Parameter(ctx_vectors)  # to be optimized
+
+        classnames = [name.replace("_", " ") for name in classnames]
+        name_lens = [len(_tokenizer.encode(name)) for name in classnames]
+        prompts = [prompt_prefix + " " + name + "." for name in classnames]
+
+        tokenized_prompts = torch.cat([clip.tokenize(p) for p in prompts])
+        with torch.no_grad():
+            embedding = clip_model.token_embedding(tokenized_prompts).type(dtype)
+
+        # These token vectors will be saved when in save_model(),
+        # but they should be ignored in load_model() as we want to use
+        # those computed using the current class names
+        self.register_buffer("token_prefix", embedding[:, :1, :])  # SOS
+        self.register_buffer("token_suffix", embedding[:, 1 + n_ctx :, :])  # CLS, EOS
+
+        self.n_cls = n_cls
+        self.n_ctx = n_ctx
+        self.tokenized_prompts = tokenized_prompts  # torch.Tensor
+        self.name_lens = name_lens
+        self.class_token_position = cfg.TRAINER.COOP.CLASS_TOKEN_POSITION
+
+    def forward(self):
+        ctx = self.ctx
+        if ctx.dim() == 2:
+            ctx = ctx.unsqueeze(0).expand(self.n_cls, -1, -1)
+
+        prefix = self.token_prefix
+        suffix = self.token_suffix
+
+        if self.class_token_position == "end":
+            prompts = torch.cat(
+                [
+                    prefix,  # (n_cls, 1, dim)
+                    ctx,     # (n_cls, n_ctx, dim)
+                    suffix,  # (n_cls, *, dim)
+                ],
+                dim=1,
+            )
+
+        elif self.class_token_position == "middle":
+            half_n_ctx = self.n_ctx // 2
+            prompts = []
+            for i in range(self.n_cls):
+                name_len = self.name_lens[i]
+                prefix_i = prefix[i : i + 1, :, :]
+                class_i = suffix[i : i + 1, :name_len, :]
+                suffix_i = suffix[i : i + 1, name_len:, :]
+                ctx_i_half1 = ctx[i : i + 1, :half_n_ctx, :]
+                ctx_i_half2 = ctx[i : i + 1, half_n_ctx:, :]
+                prompt = torch.cat(
+                    [
+                        prefix_i,     # (1, 1, dim)
+                        ctx_i_half1,  # (1, n_ctx//2, dim)
+                        class_i,      # (1, name_len, dim)
+                        ctx_i_half2,  # (1, n_ctx//2, dim)
+                        suffix_i,     # (1, *, dim)
+                    ],
+                    dim=1,
+                )
+                prompts.append(prompt)
+            prompts = torch.cat(prompts, dim=0)
+
+        elif self.class_token_position == "front":
+            prompts = []
+            for i in range(self.n_cls):
+                name_len = self.name_lens[i]
+                prefix_i = prefix[i : i + 1, :, :]
+                class_i = suffix[i : i + 1, :name_len, :]
+                suffix_i = suffix[i : i + 1, name_len:, :]
+                ctx_i = ctx[i : i + 1, :, :]
+                prompt = torch.cat(
+                    [
+                        prefix_i,  # (1, 1, dim)
+                        class_i,   # (1, name_len, dim)
+                        ctx_i,     # (1, n_ctx, dim)
+                        suffix_i,  # (1, *, dim)
+                    ],
+                    dim=1,
+                )
+                prompts.append(prompt)
+            prompts = torch.cat(prompts, dim=0)
+
+        else:
+            raise ValueError
+
+        return prompts
 
 
-#         self.transformer = kwargs.vl_model.transformer
-#         self.token_embedding = kwargs.vl_model.token_embedding
-#         self.positional_embedding = kwargs.vl_model.positional_embedding
-#         self.ln_final = kwargs.vl_model.ln_final
 
-#         self.text_projection = kwargs.vl_model.text_projection
-
-
-#         # self.transformer = Transformer(
-#         #     width=kwargs.transformer_width,
-#         #     layers=kwargs.transformer_layers,
-#         #     heads=kwargs.transformer_heads,
-#         #     attn_mask=self.build_attention_mask(),
-#         # ) 
-  
-
-#         # self.vocab_size = kwargs.vocab_size
-#         # self.token_embedding = nn.Embedding(kwargs.vocab_size, kwargs.transformer_width)
-#         # self.positional_embedding = nn.Parameter(torch.empty(self.context_length, kwargs.transformer_width))
-#         # self.ln_final = LayerNorm(kwargs.transformer_width)
-
-#         # self.image_projection = nn.Parameter(torch.empty(kwargs.vision_width, kwargs.embed_dim)) # 768 -> 512
-#         # self.text_projection = nn.Parameter(torch.empty(kwargs.transformer_width, kwargs.embed_dim)) # 512 -> 512
-
-#         # self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-
-#         # self.image_encoder = self.visual
-#         # self.text_encoder = self.text.transformer
-
-        
-#         # self.text_projection = self.text.proj
-#         self.logit_scale = kwargs.vl_model.logit_scale
-
-#         # self.initialize_parameters()
-
-#         self.gene_encoder = gene_encoder
-
-#         self.gene_projection = nn.Parameter(torch.empty(kwargs.omic_feat_dims, 512))
-#         nn.init.normal_(self.gene_projection, std=512 ** -0.5)
-
-#         self.tune_visual = kwargs.args.tune_visual
-#         if self.tune_visual.lower() == 'adapter' :
-#             print("Use visual adapter!")
-#             self.adapter = Adapter(kwargs.vision_width,4)
-
-
-#     def encode_image(self, image):
-#         image_feat = self.visual(image)
-
-#         if self.tune_visual.lower() == 'adapter':
-#             x = self.adapter(image_feat)
-#             ratio = 0.2
-#             image_feat = ratio * x + (1 - ratio) * image_feat
-        
-#         x = image_feat @ self.image_projection
-#         # x = self.image_projection( image_feat)
-
-#         return x
-
-#     def encode_text(self, text):
-#         x = self.token_embedding(text)  # [batch_size, n_ctx, d_model]   torch.Size([5, 77, 512])
-#         x = x + self.positional_embedding
-#         x = x.permute(1, 0, 2)  # NLD -> LND
-#         x = self.transformer(x)
-#         x = x.permute(1, 0, 2)  # LND -> NLD
-#         x = self.ln_final(x) # 1,77,512
-
-#         # take features from the eot embedding (eot_token is the highest number in each sequence)
-#         x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection
-
-
-#         return x
-
-#     def build_attention_mask(self):
-#         # lazily create causal attention mask, with full attention between the vision tokens
-#         # pytorch uses additive attention mask; fill with -inf
-#         mask = torch.empty(self.context_length, self.context_length)
-#         mask.fill_(float("-inf"))
-#         mask.triu_(1)  # zero out the lower diagonal
-#         return mask
-
-#     def initialize_parameters(self):
-#         nn.init.normal_(self.token_embedding.weight, std=0.02)
-#         nn.init.normal_(self.positional_embedding, std=0.01)
-
-#         proj_std = (self.transformer.width ** -0.5) * ((2 * self.transformer.layers) ** -0.5)
-#         attn_std = self.transformer.width ** -0.5
-#         fc_std = (2 * self.transformer.width) ** -0.5
-#         for block in self.transformer.resblocks:
-#             nn.init.normal_(block.attn.in_proj_weight, std=attn_std)
-#             nn.init.normal_(block.attn.out_proj.weight, std=proj_std)
-#             nn.init.normal_(block.mlp.c_fc.weight, std=fc_std)
-#             nn.init.normal_(block.mlp.c_proj.weight, std=proj_std)
-
-#         nn.init.normal_(self.image_projection, std=self.vision_width ** -0.5)
-#         nn.init.normal_(self.text_projection, std=self.transformer.width ** -0.5)
-
-#     # def encode_pc(self, pc):
-#     #     pc_feat = self.point_encoder(pc)
-#     #     pc_embed = pc_feat @ self.pc_projection
-#     #     return pc_embed
-
-#     def encode_omic(self, x_omic):
-#         omic_feat = self.gene_encoder(x_omic=x_omic)[0]
-#         omic_embed = omic_feat @ self.gene_projection
-#         return omic_embed
-
-#     def forward(self, x_omic, text, image=None):
-#         # For omic, image ==> torch.Size([1, 3, 512, 512])    
-#         # For pc, image ==> torch.Size([1, 3, 224, 224])
-    
-#         text_embed_all = []
-#         for i in range(text.shape[0]):  #(1,1,77)
-#             text_for_one_sample = text[i]
-#             text_embed = self.encode_text(text_for_one_sample)
-#             text_embed = text_embed / text_embed.norm(dim=-1, keepdim=True)
-#             text_embed = text_embed.mean(dim=0)
-#             text_embed = text_embed / text_embed.norm(dim=-1, keepdim=True)
-#             text_embed_all.append(text_embed)
-
-#         text_embed_all = torch.stack(text_embed_all)
-
-#         '''
-#         07/15 adjusted from pc to omic
-#         '''
-#         # pc_embed = self.encode_pc(pc)
-#         omic_embed = self.encode_omic(x_omic)
-        
-
-#         if image is not None:
-#             image_embed = self.encode_image(image)
-#             return {'text_embed': text_embed_all,
-#                     'omic_embed': omic_embed,
-#                     'image_embed': image_embed,
-#                     'logit_scale': self.logit_scale.exp()}
-
-#         else:
-#             return {'text_embed': text_embed_all,
-#                     'omic_embed': omic_embed,
-#                     'logit_scale': self.logit_scale.exp()}
 
 
 class GeneLIP_WITH_MIZERO(nn.Module):
@@ -859,7 +845,6 @@ class GeneLIP_WITH_MIZERO(nn.Module):
             return {'text_embed': text_embed_all,
                     'omic_embed': omic_embed,
                     'logit_scale': self.logit_scale.exp()}
-
 
 class ULIP_WITH_IMAGE(nn.Module):
     def __init__(self, point_encoder, **kwargs):
