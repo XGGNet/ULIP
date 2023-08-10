@@ -187,10 +187,10 @@ class CITEImageLoss(nn.Module):
         else:
             print('## No perform visual tuning')
 
-        if args.text_mode == 'sentence':
-            self.text_features = args.text_features
-        elif args.text_mode == 'description':
-            self.text_description_features = args.text_description_features
+        # if args.text_mode == 'sentence':
+        #     self.text_features = args.text_features
+        # elif args.text_mode == 'description':
+        #     self.text_description_features = args.text_description_features
 
 
     def forward(self, outputs):
@@ -198,6 +198,8 @@ class CITEImageLoss(nn.Module):
         # omic_embed = outputs['omic_embed']
         # text_embed = outputs['text_embed']
         image_embed = outputs['image_embed'] # [B, 512]
+        text_embed = outputs['text_embed'] # 
+
         logit_scale = outputs['logit_scale'] 
         cls_label = outputs['cls_label']
         local_batch_size = image_embed.size(0) 
@@ -223,8 +225,7 @@ class CITEImageLoss(nn.Module):
         # omic_embed_all, text_embed_all, image_embed_all = \
         #     utils.all_gather_batch([omic_embed, text_embed, image_embed])
 
-        image_embed_all = \
-        utils.all_gather_batch(image_embed)
+        image_embed_all, text_embed_all = utils.all_gather_batch([image_embed, text_embed])
 
         # cosine similarity as logits
         # logits_per_omic_text = logit_scale * omic_embed @ text_embed_all.t()
@@ -240,11 +241,11 @@ class CITEImageLoss(nn.Module):
 
         # Cross-entropy
         if self.args.text_mode == 'sentence':
-            logits = (logit_scale * image_embed_all @ self.text_features.t())
+            logits = (logit_scale * image_embed_all @ text_embed_all.t())
         elif self.args.text_mode == 'description':
-            logits =  torch.zeros((local_batch_size, len(self.text_description_features))).cuda() # [B,3]
-            for k, text_embed in self.text_description_features.items():
-                logits[:, list(self.text_description_features.keys()).index(k) ] = (logit_scale * image_embed_all @ text_embed.t()).mean(dim=-1)
+            logits =  torch.zeros((local_batch_size, len(text_embed_all))).cuda() # [B,3]
+            for k, text_embed in text_embed_all.items():
+                logits[:, list(des_text_embed.keys()).index(k) ] = (logit_scale * image_embed_all @ des_text_embed.t()).mean(dim=-1)
 
         text_cls_loss = F.cross_entropy(logits, cls_label)
         loss = text_cls_loss

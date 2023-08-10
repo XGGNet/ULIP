@@ -397,6 +397,8 @@ class GeneLIP_WITH_QUILTCLIP(nn.Module):
         self.vision_width = kwargs.vision_width
         # self.visual = kwargs.vision_model
 
+        self.args=  args  = kwargs.args
+
         self.transformer = Transformer(
             width=kwargs.transformer_width,
             layers=kwargs.transformer_layers,
@@ -428,6 +430,8 @@ class GeneLIP_WITH_QUILTCLIP(nn.Module):
         self.visual.proj = None
         # vision_model = timm.create_model('vit_base_patch32_224', num_classes=0)
 
+        self.tokenizer = tokenizer = self.args.tokenizer
+
 
         self.tune_visual = kwargs.args.tune_visual
         if self.tune_visual.lower() == 'adapter' :
@@ -435,13 +439,74 @@ class GeneLIP_WITH_QUILTCLIP(nn.Module):
             self.adapter = Adapter(kwargs.vision_width,4)
 
         
-        # self.text_prompt = self.args.text_prompt
+        self.use_text_prompt = self.args.use_text_prompt 
+        
+        
+        labels = ['II', 'III', 'IV']
+        if args.text_mode == 'sentence':
+            templates = ['A pathology slide with WHO grade {} gliomas']
+            text_sentenece = [templates[0].format(l) for l in labels] 
+        if args.text_mode == 'description':
+            self.text_description = {
+              'A pathology slide with WHO grade II gliomas':
+              [
+              'Infiltrative growth pattern',
+              'Relatively uniform cells with round or oval nuclei and minimal pleomorphism',
+              'Low mitotic activity',
+              'Absence of microvascular proliferation',
+              'Absence of necrosis',
 
-        # if self.text_prompt:
-        #     self.prompt_learner = PromptLearner(cfg, classnames, clip_model)
-        #     self.tokenized_prompts = self.prompt_learner.tokenized_prompts
+              # 'A pathology slide with grade II gliomas'
+              ],
 
+              'A pathology slide with WHO grade III gliomas':
+              [
+              # "Increased cellularity compared to grade II gliomas",
+              # "Mild to moderate nuclear atypia and pleomorphism.",
+              # "Higher mitotic activity compared to grade II gliomas.",
+              # "Absence or minimal microvascular proliferation.",
+              # "Absence or focal necrosis.",
+              "Increased cellularity",
+              "Mild to moderate nuclear atypia and pleomorphism.",
+              "Higher mitotic activity.",
+              "Absence or minimal microvascular proliferation.",
+              "Absence or focal necrosis.",
 
+              # 'A pathology slide with grade III gliomas'
+              ],
+
+              'A pathology slide with WHO grade IV gliomas':
+              [
+              "Highly cellular and pleomorphic tumor cells",
+              "Marked nuclear atypia and pleomorphism.",
+              "High mitotic activity",
+              "Prominent microvascular proliferation",
+              "Presence of necrosis, often with pseudopalisading pattern (tumor cells surrounding necrotic areas).",
+
+              # 'A pathology slide with grade IV gliomas'
+              ]
+            }
+            # 把key的字符串加在其value的每一个字符串前面
+            # caption_candidate = {k: [k + ', which has ' + i for i in v] for k, v in caption_candidate.items()}
+
+        if self.use_text_prompt:
+            cfg = {'N_CTX': 16 , 'CLASS_TOKEN_POSITION': 'end'}
+            # n_prompt = 1 if self.text_prompt=='sentence' else 5
+            # n_cls =  3
+            self.prompt_learner = PromptLearner(cfg=cfg, args=args, n_cls=3, n_des = 5,  clip_model=vl_model, tokenizer=tokenizer, des_dict = self.text_description )
+            self.text_token = self.prompt_learner.text_token
+        else:
+            if args.text_mode == 'sentence':
+                # texts.app[t.format(l) for t in templates]
+                text_token = tokenizer(text_sentence).cuda()
+            elif args.text_mode == 'description':
+                text_token = OrderedDict()
+                for k, v in self.text_description.items():
+                    tokens = tokenizer(v).cuda() #[5,77]
+                    text_token[k] = tokens
+            self.text_token = text_token
+                
+              
     def encode_image(self, image):
         image_feat = self.visual(image)  #[253,512]
 
@@ -454,12 +519,16 @@ class GeneLIP_WITH_QUILTCLIP(nn.Module):
 
         return x
 
-    def encode_text(self, text):
+    def encode_text(self, text_token, text_embed=None):
         # Eval [5,77]   Train [1,5,77]
         # if len(text.shape) >2:
         #   text = text.squeeze(0)
-        x = self.token_embedding(text)  # [batch_size, n_ctx, d_model]   torch.Size([5, 77, 512])
-        x = x + self.positional_embedding
+        if self.use_text_prompt: # prompt tuning时, 从prompt embedding开始
+            x = text_embed + self.positional_embedding
+        else:
+            x = self.token_embedding(text_token)  # [batch_size, n_ctx, d_model]   torch.Size([5, 77, 512])
+            x = x + self.positional_embedding
+
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x)
         x = x.permute(1, 0, 2)  # LND -> NLD
@@ -467,7 +536,7 @@ class GeneLIP_WITH_QUILTCLIP(nn.Module):
         # bz, context_length, embed_dim
 
         # take features from the eot embedding (eot_token is the highest number in each sequence)
-        x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection  # 1,512
+        x = x[torch.arange(x.shape[0]), text_token.argmax(dim=-1)] @ self.text_projection  # 1,512
 
         return x
 
@@ -527,11 +596,17 @@ class GeneLIP_WITH_QUILTCLIP(nn.Module):
         image_embed = self.encode_image(image)
         image_embed = image_embed / image_embed.norm(dim=-1, keepdim=True)
 
-        # if self.text_prompt:
-        #     prompts = self.prompt_learner()
-        #     tokenized_prompts = self.tokenized_prompts
-        #     text_embed = self.encode_text(prompts, tokenized_prompts)
-        #     text_embed = text_embed / text_embed.norm(dim=-1, keepdim=True)
+        if self.text_prompt: 
+            text_embed = OrderedDict()
+            learnble_text_embed = self.prompt_learner() # 5个一组.., [15, 512]
+            for k, v in self.text_description.items():
+                text_embed_output = self.encode_text( text_token=self.text_token[k], text_embed=learnble_text_embed[k] )
+                text_embed_output = text_embed_output / text_embed_output.norm(dim=-1, keepdim=True)
+                text_embed[k] = text_embed_output
+        else:
+            text_embed = self.encode_text(text_token = self.text_token)
+            text_embed = text_embed / text_embed.norm(dim=-1, keepdim=True)
+
 
         # pc_embed = self.encode_pc(pc)
         # omic_embed = self.encode_omic(x_omic)
@@ -543,132 +618,164 @@ class GeneLIP_WITH_QUILTCLIP(nn.Module):
               'logit_scale': self.logit_scale.exp()
                 }
 
-
 class PromptLearner(nn.Module):
-    def __init__(self, cfg, classnames, clip_model):
+    def __init__(self, cfg, args,n_cls, n_des, clip_model, tokenizer, des_dict=None ):
         super().__init__()
-        n_cls = len(classnames)
-        n_ctx = cfg.TRAINER.COOP.N_CTX
-        ctx_init = cfg.TRAINER.COOP.CTX_INIT
-        dtype = clip_model.dtype
+        # n_cls = len(classnames)
+        n_ctx = cfg['N_CTX']
+        # ctx_init = cfg['CTX_INIT']
+
+        # dtype = clip_model.dtype
+        dtype = clip_model.visual.conv1.weight.dtype
+
+        self.use_text_prompt = args.use_text_prompt
+        self.text_mode = args.text_mode
+
         ctx_dim = clip_model.ln_final.weight.shape[0]
-        clip_imsize = clip_model.visual.input_resolution
-        cfg_imsize = cfg.INPUT.SIZE[0]
-        assert cfg_imsize == clip_imsize, f"cfg_imsize ({cfg_imsize}) must equal to clip_imsize ({clip_imsize})"
+        # clip_imsize = clip_model.visual.input_resolution
+        # cfg_imsize = cfg.INPUT.SIZE[0]
+        # assert cfg_imsize == clip_imsize, f"cfg_imsize ({cfg_imsize}) must equal to clip_imsize ({clip_imsize})"
 
-        if ctx_init:
-            # use given words to initialize context vectors
-            ctx_init = ctx_init.replace("_", " ")
-            n_ctx = len(ctx_init.split(" "))
-            prompt = clip.tokenize(ctx_init)
-            with torch.no_grad():
-                embedding = clip_model.token_embedding(prompt).type(dtype)
-            ctx_vectors = embedding[0, 1 : 1 + n_ctx, :]
-            prompt_prefix = ctx_init
+        # if ctx_init:
+        #     # use given words to initialize context vectors
+        #     ctx_init = ctx_init.replace("_", " ")
+        #     n_ctx = len(ctx_init.split(" "))
+        #     prompt = clip.tokenize(ctx_init)
+        #     with torch.no_grad():
+        #         embedding = clip_model.token_embedding(prompt).type(dtype)
+        #     ctx_vectors = embedding[0, 1 : 1 + n_ctx, :]
+        #     prompt_prefix = ctx_init
 
-        else:
+        # else:
             # random initialization
-            if cfg.TRAINER.COOP.CSC:
-                print("Initializing class-specific contexts")
-                ctx_vectors = torch.empty(n_cls, n_ctx, ctx_dim, dtype=dtype)
-            else:
-                print("Initializing a generic context")
-                ctx_vectors = torch.empty(n_ctx, ctx_dim, dtype=dtype)
-            nn.init.normal_(ctx_vectors, std=0.02)
-            prompt_prefix = " ".join(["X"] * n_ctx)
+        # if cfg['CSC']:
+        #     print("Initializing class-specific contexts")
+        #     ctx_vectors = torch.empty(n_cls, n_ctx, ctx_dim, dtype=dtype)
+        # else:
 
-        print(f'Initial context: "{prompt_prefix}"')
+            # print("Initializing a generic context")
+        ctx_vectors = torch.empty(n_des, n_ctx, ctx_dim, dtype=dtype) # [n_pt, 16, 512]   待学习的embedding
+
+        nn.init.normal_(ctx_vectors, std=0.02)
+        text_prefix = " ".join(["X"] * n_ctx)
+
+        print(f'Initial context: "{text_prefix}"')
         print(f"Number of context words (tokens): {n_ctx}")
 
         self.ctx = nn.Parameter(ctx_vectors)  # to be optimized
 
-        classnames = [name.replace("_", " ") for name in classnames]
-        name_lens = [len(_tokenizer.encode(name)) for name in classnames]
-        prompts = [prompt_prefix + " " + name + "." for name in classnames]
 
-        tokenized_prompts = torch.cat([clip.tokenize(p) for p in prompts])
-        with torch.no_grad():
-            embedding = clip_model.token_embedding(tokenized_prompts).type(dtype)
+
+        '''
+        0810 下午: 先只code description 的设定, 不然太久了...
+        '''
+        # classnames = [name.replace("_", " ") for name in classnames]
+        # name_lens = [len(tokenizer(name)) for name in classnames]
+
+        # if self.text_mode == 'sentence':
+        #     text_sentence = [text_prefix + " " + sen for sen in sen_list]
+        #     text_token = torch.cat([tokenizer(p) for p in text_sentence])
+        #     with torch.no_grad():
+        #         text_embedding = clip_model.token_embedding(text_token).type(dtype)
+        if self.text_mode == 'description':
+            text_description = Orderdict()
+            text_token = Orderdict()
+            text_embed = Orderdict()
+            embed_prefix = Orderdict()
+            emnbed_suffix = Orderdict()
+            for k, v in description_dict.items():
+                text_description[k] = [text_prefix + " " + des for des in v]
+                text_token[k] =  torch.cat([tokenizer(text_des) for text_des in text_token[k]])
+                with torch.no_grad():
+                    text_embed[k] = clip_model.token_embedding(text_token[k]).type(dtype) # [5, 77, 512]
+                embed_prefix[k] = text_embed[:, :1, :] # [5,1,512]
+                embed_suffix[k] = text_embed[:, 1 + n_ctx :, :] # [5, *, 512]
+            
+            self.description_dict = description_dict
+            
 
         # These token vectors will be saved when in save_model(),
         # but they should be ignored in load_model() as we want to use
         # those computed using the current class names
-        self.register_buffer("token_prefix", embedding[:, :1, :])  # SOS
-        self.register_buffer("token_suffix", embedding[:, 1 + n_ctx :, :])  # CLS, EOS
+        self.register_buffer("embed_prefix", embed_prefix)  # SOS 
+        self.register_buffer("embed_suffix", embed_suffix)  # CLS, EOS
 
         self.n_cls = n_cls
+        self.n_des = n_des
         self.n_ctx = n_ctx
-        self.tokenized_prompts = tokenized_prompts  # torch.Tensor
+        self.text_token = text_token  # torch.Tensor
         self.name_lens = name_lens
-        self.class_token_position = cfg.TRAINER.COOP.CLASS_TOKEN_POSITION
+        self.class_token_position = cfg['CLASS_TOKEN_POSITION']
 
     def forward(self):
-        ctx = self.ctx
-        if ctx.dim() == 2:
-            ctx = ctx.unsqueeze(0).expand(self.n_cls, -1, -1)
+        ctx = self.ctx # 待学习embed   [5,16,512]
+        # if ctx.dim() == 2:
+        #     ctx = ctx.unsqueeze(0).expand(self.n_des, -1, -1)
 
-        prefix = self.token_prefix
-        suffix = self.token_suffix
+        prefix = self.embed_prefix
+        suffix = self.embed_suffix
 
         if self.class_token_position == "end":
-            prompts = torch.cat(
-                [
-                    prefix,  # (n_cls, 1, dim)
-                    ctx,     # (n_cls, n_ctx, dim)
-                    suffix,  # (n_cls, *, dim)
-                ],
-                dim=1,
-            )
+            learnable_embed = OrderedDict()
+            for k, v in self.description_dict.items():
+              cls_index = list(description_dict.keys()).index(k)
 
-        elif self.class_token_position == "middle":
-            half_n_ctx = self.n_ctx // 2
-            prompts = []
-            for i in range(self.n_cls):
-                name_len = self.name_lens[i]
-                prefix_i = prefix[i : i + 1, :, :]
-                class_i = suffix[i : i + 1, :name_len, :]
-                suffix_i = suffix[i : i + 1, name_len:, :]
-                ctx_i_half1 = ctx[i : i + 1, :half_n_ctx, :]
-                ctx_i_half2 = ctx[i : i + 1, half_n_ctx:, :]
-                prompt = torch.cat(
-                    [
-                        prefix_i,     # (1, 1, dim)
-                        ctx_i_half1,  # (1, n_ctx//2, dim)
-                        class_i,      # (1, name_len, dim)
-                        ctx_i_half2,  # (1, n_ctx//2, dim)
-                        suffix_i,     # (1, *, dim)
-                    ],
-                    dim=1,
-                )
-                prompts.append(prompt)
-            prompts = torch.cat(prompts, dim=0)
+              learnable_embed[k] = torch.cat(
+                  [
+                      prefix[k],  # (n_des, 1, dim)
+                      ctx,     # (n_des, n_ctx, dim)
+                      suffix[k],  # (n_des, *, dim)
+                  ],
+                  dim=1,
+              )
 
-        elif self.class_token_position == "front":
-            prompts = []
-            for i in range(self.n_cls):
-                name_len = self.name_lens[i]
-                prefix_i = prefix[i : i + 1, :, :]
-                class_i = suffix[i : i + 1, :name_len, :]
-                suffix_i = suffix[i : i + 1, name_len:, :]
-                ctx_i = ctx[i : i + 1, :, :]
-                prompt = torch.cat(
-                    [
-                        prefix_i,  # (1, 1, dim)
-                        class_i,   # (1, name_len, dim)
-                        ctx_i,     # (1, n_ctx, dim)
-                        suffix_i,  # (1, *, dim)
-                    ],
-                    dim=1,
-                )
-                prompts.append(prompt)
-            prompts = torch.cat(prompts, dim=0)
+        # elif self.class_token_position == "middle":
+        #     half_n_ctx = self.n_ctx // 2
+        #     prompts = []
+        #     for i in range(self.n_cls):
+        #         name_len = self.name_lens[i]
+        #         prefix_i = prefix[i : i + 1, :, :]
+        #         class_i = suffix[i : i + 1, :name_len, :]
+        #         suffix_i = suffix[i : i + 1, name_len:, :]
+        #         ctx_i_half1 = ctx[i : i + 1, :half_n_ctx, :]
+        #         ctx_i_half2 = ctx[i : i + 1, half_n_ctx:, :]
+        #         prompt = torch.cat(
+        #             [
+        #                 prefix_i,     # (1, 1, dim)
+        #                 ctx_i_half1,  # (1, n_ctx//2, dim)
+        #                 class_i,      # (1, name_len, dim)
+        #                 ctx_i_half2,  # (1, n_ctx//2, dim)
+        #                 suffix_i,     # (1, *, dim)
+        #             ],
+        #             dim=1,
+        #         )
+        #         prompts.append(prompt)
+        #     prompts = torch.cat(prompts, dim=0)
 
-        else:
-            raise ValueError
+        # elif self.class_token_position == "front":
+        #     prompts = []
+        #     for i in range(self.n_cls):
+        #         name_len = self.name_lens[i]
+        #         prefix_i = prefix[i : i + 1, :, :]
+        #         class_i = suffix[i : i + 1, :name_len, :]
+        #         suffix_i = suffix[i : i + 1, name_len:, :]
+        #         ctx_i = ctx[i : i + 1, :, :]
+        #         prompt = torch.cat(
+        #             [
+        #                 prefix_i,  # (1, 1, dim)
+        #                 class_i,   # (1, name_len, dim)
+        #                 ctx_i,     # (1, n_ctx, dim)
+        #                 suffix_i,  # (1, *, dim)
+        #             ],
+        #             dim=1,
+        #         )
+        #         prompts.append(prompt)
+        #     prompts = torch.cat(prompts, dim=0)
 
-        return prompts
+        # else:
+        #     raise ValueError
 
-
+        return learnable_embed # dict
 
 
 
@@ -845,6 +952,7 @@ class GeneLIP_WITH_MIZERO(nn.Module):
             return {'text_embed': text_embed_all,
                     'omic_embed': omic_embed,
                     'logit_scale': self.logit_scale.exp()}
+
 
 class ULIP_WITH_IMAGE(nn.Module):
     def __init__(self, point_encoder, **kwargs):
@@ -1495,10 +1603,13 @@ def ULIP_GENE_SNN_QuiltCLIP(args):
             param.data.copy_(param_new)
 
         for name, param in model.named_parameters(): # 把slip的参数往
-              if 'gene' in name or 'omic' in name or 'adapter' in name:
-                  param.requires_grad = True
-              else:
-                  param.requires_grad = False
+            param.requires_grad = False
+            for tune_name in ['gene', 'omic', 'adapter', 'prompt']:
+                if tune_name in name:
+                    param.requires_grad = True
+                    break
+              # else:
+              #     param.requires_grad = False
 
         # for name, param in model.named_parameters():
         #   if not param.requires_grad:

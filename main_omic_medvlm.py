@@ -279,6 +279,8 @@ def get_args_parser():
 
     parser.add_argument('--text_mode', type=str, default='sentence', choices=['sentence', 'description'])
 
+    parser.add_argument('--use_text_prompt', action='store_true', default=False)
+
     parser.add_argument('--fix_gene', action='store_true', default=False)
     parser.add_argument('--wo_gene', action='store_true', default=False)
 
@@ -606,12 +608,24 @@ def main(args):
 
         model.eval()
         with torch.no_grad():
-                
+
+            # if args.text_prompt:
+            #     # text_description_features = OrderedDict()
+            #     # learnble_text_embed = model.prompt_learner() # 5个一组.., [15, 512]
+            #     # for k, v in model.text_description.items():
+            #     #     text_embed_output = model.encode_text( text_token=model.text_token[k], text_embed=learnble_text_embed[k] )
+            #     #     text_embed_output = text_embed_output / text_embed_output.norm(dim=-1, keepdim=True)
+            #     #     text_description_features[k] = text_embed_output
+
+            #     pass
+
+            # else:
             if args.text_mode == 'sentence':
                 texts = [templates[0].format(l) for l in labels]
                 # texts.app[t.format(l) for t in templates]
-                texts = tokenizer(texts).cuda()
-                text_features =  utils.get_model(model).encode_text(texts)
+                text_token = tokenizer(texts).cuda()
+                
+                text_features =  utils.get_model(model).encode_text(text_token = text_token)
                 text_features = text_features / text_features.norm(dim=-1, keepdim=True)
 
                 args.text_features = text_features
@@ -620,7 +634,7 @@ def main(args):
                 text_description_features = OrderedDict()
                 for k, v in caption_candidate.items():
                     tokens = tokenizer(v).cuda() #[5,77]
-                    description_features = utils.get_model(model).encode_text(tokens)
+                    description_features = utils.get_model(model).encode_text(text_token)
                     description_features = description_features / description_features.norm(dim=-1, keepdim=True)
                     text_description_features[ k ]  =  description_features #[5,512]
                     # 3 * [5,512]
@@ -897,11 +911,20 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args):
         mm_per_class_correct_top1 = collections.defaultdict(int)
         
         # per_class_correct_top5 = collections.defaultdict(int)
+        
+        if args.use_text_prompt:
+            text_description_features = OrderedDict()
+            learnble_text_embed = model.prompt_learner() # 5个一组.., [15, 512]
+            for k, v in model.text_description.items():
+                text_embed_output = model.encode_text( text_token=model.text_token[k], text_embed=learnble_text_embed[k] )
+                text_embed_output = text_embed_output / text_embed_output.norm(dim=-1, keepdim=True)
+                text_description_features[k] = text_embed_output
 
-        if args.text_mode == 'sentence':
-            text_features = args.text_features
-        elif args.text_mode == 'description':
-            text_description_features = args.text_description_features
+        else:
+            if args.text_mode == 'sentence':
+                text_features = args.text_features
+            elif args.text_mode == 'description':
+                text_description_features = args.text_description_features
         
 
         for i, inputs in enumerate(test_loader):
