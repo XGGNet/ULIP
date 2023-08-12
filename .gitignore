@@ -6,3 +6,4 @@ outputs/
 biomed-clip-share/
 src/
 BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext/
+wandb/

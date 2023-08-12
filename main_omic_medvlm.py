@@ -288,6 +288,10 @@ def get_args_parser():
 
     parser.add_argument('--half_label_and_pair', action='store_true', default=False)
 
+    parser.add_argument('--only_vis_cls_head', action='store_true', default=False)
+
+    parser.add_argument('--exp', type=str, default=None)
+
     parser.add_argument('--debug', action='store_true', default=False)
 
 
@@ -306,14 +310,16 @@ def main(args):
     else:
         # 用年月日时间命名文件
         time_stamp = datetime.datetime.now().strftime('%m%d-%H%M%S')
+    
+    exp_name = args.text_mode + '_' + args.exp if args.exp is not None else args.text_mode
 
-    args.output_dir = os.path.join(args.output_dir, args.text_mode + f'_{time_stamp}')
+    args.output_dir = os.path.join(args.output_dir, exp_name + f'_{time_stamp}')
     # create dir
     os.makedirs(args.output_dir, exist_ok = True)
 
     if utils.is_main_process() and args.wandb:
         wandb_id = os.path.split(args.output_dir)[-1]
-        wandb.init(project='ULIP', id=wandb_id, config=args, reinit=True, entity='lxue')
+        wandb.init(project='ULIP', id=wandb_id, config=args, reinit=True, entity='XGGNet')
 
     # fix the seed for reproducibility
     seed = args.seed + utils.get_rank()
@@ -609,36 +615,36 @@ def main(args):
         model.eval()
         with torch.no_grad():
 
-            # if args.text_prompt:
-            #     # text_description_features = OrderedDict()
-            #     # learnble_text_embed = model.prompt_learner() # 5个一组.., [15, 512]
-            #     # for k, v in model.text_description.items():
-            #     #     text_embed_output = model.encode_text( text_token=model.text_token[k], text_embed=learnble_text_embed[k] )
-            #     #     text_embed_output = text_embed_output / text_embed_output.norm(dim=-1, keepdim=True)
-            #     #     text_description_features[k] = text_embed_output
+            if args.use_text_prompt:
+                # text_description_features = OrderedDict()
+                # learnble_text_embed = model.prompt_learner() # 5个一组.., [15, 512]
+                # for k, v in model.text_description.items():
+                #     text_embed_output = model.encode_text( text_token=model.text_token[k], text_embed=learnble_text_embed[k] )
+                #     text_embed_output = text_embed_output / text_embed_output.norm(dim=-1, keepdim=True)
+                #     text_description_features[k] = text_embed_output
 
-            #     pass
+                pass
 
-            # else:
-            if args.text_mode == 'sentence':
-                texts = [templates[0].format(l) for l in labels]
-                # texts.app[t.format(l) for t in templates]
-                text_token = tokenizer(texts).cuda()
+            else:
+                if args.text_mode == 'sentence':
+                    texts = [templates[0].format(l) for l in labels]
+                    # texts.app[t.format(l) for t in templates]
+                    text_token = tokenizer(texts).cuda()
+                    
+                    text_features =  utils.get_model(model).encode_text(text_token = text_token)
+                    text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+
+                    args.text_features = text_features
+
+                elif args.text_mode == 'description':
+                    text_description_features = OrderedDict()
+                    for k, v in caption_candidate.items():
+                        tokens = tokenizer(v).cuda() #[5,77]
+                        description_features = utils.get_model(model).encode_text(text_token = tokens)
+                        description_features = description_features / description_features.norm(dim=-1, keepdim=True)
+                        text_description_features[ k ]  =  description_features #[5,512]
+                        # 3 * [5,512]
                 
-                text_features =  utils.get_model(model).encode_text(text_token = text_token)
-                text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-
-                args.text_features = text_features
-
-            elif args.text_mode == 'description':
-                text_description_features = OrderedDict()
-                for k, v in caption_candidate.items():
-                    tokens = tokenizer(v).cuda() #[5,77]
-                    description_features = utils.get_model(model).encode_text(text_token)
-                    description_features = description_features / description_features.norm(dim=-1, keepdim=True)
-                    text_description_features[ k ]  =  description_features #[5,512]
-                    # 3 * [5,512]
-            
                 args.text_description_features = text_description_features
 
     criterion = models.get_loss(args).cuda(args.gpu)
@@ -651,8 +657,8 @@ def main(args):
 
     for epoch in range(args.start_epoch, args.epochs):
 
-        # if epoch == args.start_epoch:
-        #     val_stats = test_zeroshot_pathomic_core(val_loader, model, tokenizer, args) 
+        if epoch == args.start_epoch:
+            val_stats = test_zeroshot_pathomic_core(val_loader, model, tokenizer, args) 
             
         if args.distributed:
             train_sampler.set_epoch(epoch)
@@ -661,6 +667,7 @@ def main(args):
         val_stats = {"acc1": -1}
 
         if epoch % 1 == 0:
+        # if epoch ==-100:
 
             val_stats = test_zeroshot_pathomic_core(val_loader, model, tokenizer, args)
             main_modality = ['omic', 'path', 'mm'][1]# image is the main mod
@@ -702,13 +709,12 @@ def main(args):
                 }, is_best, args.output_dir)
 
         log_stats = {'epoch': epoch, 
-                    **{f'\ntrain_{k}': v for k, v in train_stats.items()},
-                     **{f'\ntest_{k}': v for k, v in val_stats.items()},
-                     '\nbest_acc1': best_acc1,
-                     'ap': best_ap,
-                     'auc': best_auc,
+                    **{f'train_{k}': v for k, v in train_stats.items()},
+                     **{f'test_{k}': v for k, v in val_stats.items()},
+                     'best_acc1': best_acc1,
+                     'ap when best_acc1': best_ap,
+                     'auc when best_auc': best_auc,
                      'best_epoch': best_epoch,
-                     
                      }
 
         if utils.is_main_process():
@@ -744,7 +750,7 @@ def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule,
         # update weight decay and learning rate according to their schedule
         it = iters_per_epoch * epoch + optim_iter  # global training iteration
         for k, param_group in enumerate(optimizer.param_groups):
-            param_group['lr'] = lr_schedule[it]
+            param_group['lr'] = args.lr #lr_schedule[it]
 
         # (x_path, x_grph, x_omic, censor, survtime, grade, index, sample_idx) = inputs
         # pc = inputs[3] # (8092,3)train
@@ -757,11 +763,15 @@ def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule,
 
         # inputs = {'images': inputs[0], 'gene': inputs[1], 'cls_label': inputs[2]} # torch.Size([1072, 1, 3, 77])  # torch.Size([1072, 1, 3, 77])
 
-
         # compute output
         with amp.autocast(enabled=not args.disable_amp):
 
-            outputs = model(*inputs)
+            if args.only_vis_cls_head:
+                inputs = [tensor.cuda(args.gpu, non_blocking=True) for tensor in [x_path] ]
+                outputs = model.forward_visual_cls_head(*inputs)
+            else:
+                outputs = model(*inputs)
+
             outputs['cls_label'] = grade.cuda(args.gpu, non_blocking=True)
             loss_dict = criterion(outputs)
             loss = loss_dict['loss']
@@ -784,10 +794,6 @@ def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule,
             continue
 
         # compute gradient and do SGD step
-
-        '''
-        Temporary comments for debug
-        '''
 
         scaler.step(optimizer)
         scaler.update()
@@ -942,10 +948,9 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args):
                 per_class_stats[name] += 1
                 target_name.append(name)
 
-            # pc = pc.cuda(args.gpu, non_blocking=True)
-
             sw_cnt = 0
             # temp_record = 0
+            vis_cls_logits = []
             for h in range(0, x_path_full.shape[-2], args.input_size_path):
                 for w in range(0, x_path_full.shape[-1], args.input_size_path):
 
@@ -968,37 +973,45 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args):
                     # temp_record += x_path.sum()
 
                     x_path = x_path.cuda(args.gpu, non_blocking=True)
-                    path_features = utils.get_model(model).encode_image(x_path)
-                    path_features = path_features / path_features.norm(dim=-1, keepdim=True)
 
-                    # encode pathology
-                    if sw_cnt == 0: 
-                        if args.text_mode == 'sentence':
-                            logits = (logit_scale * path_features @ text_features.t())
-                        elif args.text_mode == 'description':
-                            logits =  torch.zeros((len(x_path), len(text_description_features))).cuda() # [B,3]
-                            for k, text_features in text_description_features.items():
-                                logits[:, list(text_description_features.keys()).index(k) ] = (logit_scale * path_features @ text_features.t()).mean(dim=-1)
-                            # logits = logits.detach().softmax(dim=-1)
+                    if args.only_vis_cls_head:
+                        vis_cls_logits.append(model.forward_visual_cls_head(x_path)['logits'])
                     else:
-                        if args.text_mode == 'sentence':
-                            _logits = (logit_scale * path_features @ text_features.t())
-                        elif args.text_mode == 'description':
-                            _logits =  torch.zeros((len(x_path), len(text_description_features))).cuda() # [B,3]
-                            for k, text_features in text_description_features.items():
-                                _logits[:, list(text_description_features.keys()).index(k) ] = (logit_scale * path_features @ text_features.t()).mean(dim=-1)
-                            # _logits = _logits.detach().softmax(dim=-1)
+                        path_features = utils.get_model(model).encode_image(x_path)
+                        path_features = path_features / path_features.norm(dim=-1, keepdim=True)
 
-                        # path_features += _path_features
-                        logits += _logits
-                    sw_cnt += 1
+                        # encode pathology
+                        if sw_cnt == 0: 
+                            if args.text_mode == 'sentence':
+                                logits = (logit_scale * path_features @ text_features.t())
+                            elif args.text_mode == 'description':
+                                logits =  torch.zeros((len(x_path), len(text_description_features))).cuda() # [B,3]
+                                for k, text_features in text_description_features.items():
+                                    logits[:, list(text_description_features.keys()).index(k) ] = (logit_scale * path_features @ text_features.t()).mean(dim=-1)
+                                # logits = logits.detach().softmax(dim=-1)
+                        else:
+                            if args.text_mode == 'sentence':
+                                _logits = (logit_scale * path_features @ text_features.t())
+                            elif args.text_mode == 'description':
+                                _logits =  torch.zeros((len(x_path), len(text_description_features))).cuda() # [B,3]
+                                for k, text_features in text_description_features.items():
+                                    _logits[:, list(text_description_features.keys()).index(k) ] = (logit_scale * path_features @ text_features.t()).mean(dim=-1)
+                                # _logits = _logits.detach().softmax(dim=-1)
+
+                            # path_features += _path_features
+                            logits += _logits
+                        sw_cnt += 1
                 
             # path_features = path_features /sw_cnt # 调用SLIP () | biomedCLIP (512,512)
             # logits_per_path=  path_features @ text_features.t()
 
-            logits = logits / sw_cnt
-            # logits = logits.softmax(dim=-1)
-            logits_per_path = logits
+            if args.only_vis_cls_head:
+                logits_per_path = logits = torch.stack(vis_cls_logits, dim=0).mean(dim=0)
+            else:
+
+                logits = logits / sw_cnt
+                # logits = logits.softmax(dim=-1)
+                logits_per_path = logits
 
 
             x_omic = x_omic.cuda(args.gpu, non_blocking=True)
@@ -1018,7 +1031,7 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args):
             elif args.text_mode == 'description':
                 logits_per_omic =  torch.zeros((len(omic_features), len(text_description_features))).cuda() # [B,3]
                 for k, text_features in text_description_features.items():
-                    logits_per_omic[:, list(text_description_features.keys()).index(k)] = (logit_scale * path_features @ text_features.t()).mean(dim=-1)
+                    logits_per_omic[:, list(text_description_features.keys()).index(k)] = (logit_scale * omic_features @ text_features.t()).mean(dim=-1)
                 logits_per_omic = logits_per_omic.detach().softmax(dim=-1)
     
 

@@ -375,31 +375,31 @@ class Pathomic_InstanceSample(Dataset):
 
         elif self.task == "grad": # grading分类
             
-            '''
-            选择构造正样本的模式
-            '''
-            if self.pos_mode == 'exact':
-                pos_idx = np.asarray([index])
+            # '''
+            # 选择构造正样本的模式
+            # '''
+            # if self.pos_mode == 'exact':
+            #     pos_idx = np.asarray([index])
 
-            elif self.pos_mode == 'relax':
-                pos_idx = np.asarray([np.random.choice(self.cls_positive[single_g], 1)[0]])
-                # print("anchor:", index, "pos_idx:", pos_idx)
+            # elif self.pos_mode == 'relax':
+            #     pos_idx = np.asarray([np.random.choice(self.cls_positive[single_g], 1)[0]])
+            #     # print("anchor:", index, "pos_idx:", pos_idx)
 
-            elif self.pos_mode == 'multi_pos': # enter here 
-                # print("==============multiple positive pairs===============")
-                # print("total number of positive samples:", self.cls_positive[single_g].shape)
-                replace = True if self.p > len(self.cls_positive[single_g]) else False
-                pos_idx = np.random.choice(self.cls_positive[single_g], self.p, replace=replace)
-                # self.p: 300 是正样本数量;  single_g: 2 是类别, self.cls_positive[single_g] 是同类别的样本ID
+            # elif self.pos_mode == 'multi_pos': # enter here 
+            #     # print("==============multiple positive pairs===============")
+            #     # print("total number of positive samples:", self.cls_positive[single_g].shape)
+            #     replace = True if self.p > len(self.cls_positive[single_g]) else False
+            #     pos_idx = np.random.choice(self.cls_positive[single_g], self.p, replace=replace)
+            #     # self.p: 300 是正样本数量;  single_g: 2 是类别, self.cls_positive[single_g] 是同类别的样本ID
 
-                pos_idx[0] = index ### make sure the sample is selected as positive pair.
+            #     pos_idx[0] = index ### make sure the sample is selected as positive pair.
 
-            else:
-                raise NotImplementedError(self.pos_mode)
+            # else:
+            #     raise NotImplementedError(self.pos_mode)
 
-            replace = True if self.k > len(self.cls_negative[single_g]) else False
-            # neg_idx = np.random.choice(self.cls_negative[single_g], self.k, replace=replace)
-            neg_idx = np.zeros(700)
+            # replace = True if self.k > len(self.cls_negative[single_g]) else False
+            # # neg_idx = np.random.choice(self.cls_negative[single_g], self.k, replace=replace)
+            # neg_idx = np.zeros(700)
 
             '''
             Caption for grading
@@ -511,7 +511,7 @@ class Pathomic_InstanceSample(Dataset):
         # print("sample index:", index)
         # print("positive index:", pos_idx)
         # print("negative index:", neg_idx)
-        sample_idx = np.hstack((pos_idx, neg_idx))
+        # sample_idx = np.hstack((pos_idx, neg_idx))
 
         # print("sample label:", single_g)
         # for i in range(len(sample_idx)):
@@ -520,6 +520,9 @@ class Pathomic_InstanceSample(Dataset):
 
         # return (self.transforms(single_X_path), tokenized_captions, single_X_omic, single_e, single_t, single_g, index, sample_idx)
         # path_img, x_graph, x_omic, censor, survtime, grade ==> path_img, caption, x_omic, censor, survtime, grade
+
+        sample_idx = -1
+
 
         if self.split == 'train':
             return (self.train_transforms(single_X_path), tokenized_captions , single_X_omic, single_e, single_t, single_g, index, sample_idx)

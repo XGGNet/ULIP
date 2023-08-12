@@ -28,6 +28,7 @@ from thop import profile
 # from src.zeroshot_utils.zeroshot_path import zero_shot_classifier
 
 import pandas as pd
+from collections import OrderedDict
 
 # from coop import *
 
@@ -438,6 +439,9 @@ class GeneLIP_WITH_QUILTCLIP(nn.Module):
             print("Use visual adapter!")
             self.adapter = Adapter(kwargs.vision_width,4)
 
+        if self.args.only_vis_cls_head:
+            self.cls_head = nn.Linear(512, 3)
+
         
         self.use_text_prompt = self.args.use_text_prompt 
         
@@ -493,7 +497,11 @@ class GeneLIP_WITH_QUILTCLIP(nn.Module):
             cfg = {'N_CTX': 16 , 'CLASS_TOKEN_POSITION': 'end'}
             # n_prompt = 1 if self.text_prompt=='sentence' else 5
             # n_cls =  3
-            self.prompt_learner = PromptLearner(cfg=cfg, args=args, n_cls=3, n_des = 5,  clip_model=vl_model, tokenizer=tokenizer, des_dict = self.text_description )
+            # if self.text_mode  == 'sentence':
+            #     self.prompt_learner
+            # elif self.text_mode == 'description':
+
+            self.prompt_learner = PromptLearner(cfg=cfg, args=args, n_cls=3, n_des = 5,  clip_model=vl_model, tokenizer=tokenizer, description_dict = self.text_description )
             self.text_token = self.prompt_learner.text_token
         else:
             if args.text_mode == 'sentence':
@@ -509,7 +517,7 @@ class GeneLIP_WITH_QUILTCLIP(nn.Module):
               
     def encode_image(self, image):
         image_feat = self.visual(image)  #[253,512]
-
+      
         if self.tune_visual.lower() == 'adapter':
             x = self.adapter(image_feat)
             ratio = 0.2
@@ -574,7 +582,19 @@ class GeneLIP_WITH_QUILTCLIP(nn.Module):
         omic_embed = omic_feat @ self.gene_projection # dimension: 128 -> 512
         return omic_embed
 
-    def forward(self, image, gene, cls_label):
+    def forward_visual_cls_head(self, image):
+        image_embed = self.encode_image(image)
+        image_embed = image_embed / image_embed.norm(dim=-1, keepdim=True)
+
+        logits = self.cls_head(image_embed)
+
+        return { 
+              'logits': logits
+                }
+
+
+
+    def forward(self, image, gene):
         # For omic, image ==> torch.Size([1, 3, 512, 512])    
         # For pc, image ==> torch.Size([1, 3, 224, 224])
 
@@ -596,7 +616,7 @@ class GeneLIP_WITH_QUILTCLIP(nn.Module):
         image_embed = self.encode_image(image)
         image_embed = image_embed / image_embed.norm(dim=-1, keepdim=True)
 
-        if self.text_prompt: 
+        if self.use_text_prompt: 
             text_embed = OrderedDict()
             learnble_text_embed = self.prompt_learner() # 5个一组.., [15, 512]
             for k, v in self.text_description.items():
@@ -619,7 +639,7 @@ class GeneLIP_WITH_QUILTCLIP(nn.Module):
                 }
 
 class PromptLearner(nn.Module):
-    def __init__(self, cfg, args,n_cls, n_des, clip_model, tokenizer, des_dict=None ):
+    def __init__(self, cfg, args, n_cls, n_des, clip_model, tokenizer, description_dict=None ):
         super().__init__()
         # n_cls = len(classnames)
         n_ctx = cfg['N_CTX']
@@ -654,6 +674,7 @@ class PromptLearner(nn.Module):
         # else:
 
             # print("Initializing a generic context")
+
         ctx_vectors = torch.empty(n_des, n_ctx, ctx_dim, dtype=dtype) # [n_pt, 16, 512]   待学习的embedding
 
         nn.init.normal_(ctx_vectors, std=0.02)
@@ -678,18 +699,18 @@ class PromptLearner(nn.Module):
         #     with torch.no_grad():
         #         text_embedding = clip_model.token_embedding(text_token).type(dtype)
         if self.text_mode == 'description':
-            text_description = Orderdict()
-            text_token = Orderdict()
-            text_embed = Orderdict()
-            embed_prefix = Orderdict()
-            emnbed_suffix = Orderdict()
+            text_description = OrderedDict() 
+            text_token = OrderedDict()  
+            text_embed = OrderedDict() 
+            embed_prefix = OrderedDict() 
+            embed_suffix = OrderedDict() 
             for k, v in description_dict.items():
                 text_description[k] = [text_prefix + " " + des for des in v]
-                text_token[k] =  torch.cat([tokenizer(text_des) for text_des in text_token[k]])
+                text_token[k] =  torch.cat([tokenizer(text_des) for text_des in text_description[k]])
                 with torch.no_grad():
                     text_embed[k] = clip_model.token_embedding(text_token[k]).type(dtype) # [5, 77, 512]
-                embed_prefix[k] = text_embed[:, :1, :] # [5,1,512]
-                embed_suffix[k] = text_embed[:, 1 + n_ctx :, :] # [5, *, 512]
+                embed_prefix[k] = text_embed[k][:, :1, :].type(dtype).to(self.ctx.device)  # [5,1,512]
+                embed_suffix[k] = text_embed[k][:, 1 + n_ctx :, :].type(dtype).to(self.ctx.device)   # [5, *, 512]
             
             self.description_dict = description_dict
             
@@ -697,14 +718,17 @@ class PromptLearner(nn.Module):
         # These token vectors will be saved when in save_model(),
         # but they should be ignored in load_model() as we want to use
         # those computed using the current class names
-        self.register_buffer("embed_prefix", embed_prefix)  # SOS 
-        self.register_buffer("embed_suffix", embed_suffix)  # CLS, EOS
+        # self.register_buffer("embed_prefix", embed_prefix)  # SOS 
+        # self.register_buffer("embed_suffix", embed_suffix)  # CLS, EOS
+
+        self.embed_prefix = embed_prefix
+        self.embed_suffix = embed_suffix
 
         self.n_cls = n_cls
         self.n_des = n_des
         self.n_ctx = n_ctx
         self.text_token = text_token  # torch.Tensor
-        self.name_lens = name_lens
+        # self.name_lens = name_lens
         self.class_token_position = cfg['CLASS_TOKEN_POSITION']
 
     def forward(self):
@@ -716,15 +740,15 @@ class PromptLearner(nn.Module):
         suffix = self.embed_suffix
 
         if self.class_token_position == "end":
-            learnable_embed = OrderedDict()
+            learnable_embed = {} 
             for k, v in self.description_dict.items():
-              cls_index = list(description_dict.keys()).index(k)
+              cls_index = list(self.description_dict.keys()).index(k)
 
               learnable_embed[k] = torch.cat(
                   [
-                      prefix[k],  # (n_des, 1, dim)
+                      prefix[k].to(ctx.device),  # (n_des, 1, dim)
                       ctx,     # (n_des, n_ctx, dim)
-                      suffix[k],  # (n_des, *, dim)
+                      suffix[k].to(ctx.device),  # (n_des, *, dim)
                   ],
                   dim=1,
               )
@@ -1089,7 +1113,10 @@ class ULIP_WITH_IMAGE(nn.Module):
 def get_loss(args):
     # return losses.ULIPWithImageLoss()
     # return losses.GeneLIPWithImageLoss(args)
-    return losses.CITEImageLoss(args)
+    if args.only_vis_cls_head:
+        return losses.VisClsLoss(args)
+    else:
+        return losses.CITEImageLoss(args)
 
 
 def get_metric_names(model):
@@ -1604,7 +1631,7 @@ def ULIP_GENE_SNN_QuiltCLIP(args):
 
         for name, param in model.named_parameters(): # 把slip的参数往
             param.requires_grad = False
-            for tune_name in ['gene', 'omic', 'adapter', 'prompt']:
+            for tune_name in ['gene', 'omic', 'adapter', 'prompt', 'cls_head']:
                 if tune_name in name:
                     param.requires_grad = True
                     break
