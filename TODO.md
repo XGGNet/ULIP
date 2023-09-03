@@ -103,18 +103,21 @@
 - {EXP} 50% data + multi-modal + visual adapter
 - {EXP} 50% data + multi-modal + visual adapter + fix gene
 - {EXP} 50$ data + multi-modal + visual adapter + w/o gene
-
+base2new_classbase2new_class
 - {EXP} 50% sup data + 50% paired data + multi-modal + visual adapter
   - Note: 前50% train data 保留标注, 后50% 只保留和基因的匹配关系
 - {EXP} 50% sup data + 50% paried data + multi-modal + visual adapter + fix gene
 
+## 0815 ##
+- [X] {EXP} supervised cont of image and gene
+- [] few-shot data pipeline
+- 
 
-
-# 眼底基因+ULIP
-
-## 网络
-
-## 数据
+## 0829 ##
+- [] {EXP} 三个loss的weight的比例如何设置才好
+- [] {CODE} few-shot data pipeline
+- [] {CODE} base_to_new generalization pipeline
+- [] {THINK} design multi-modal graph..
 
 
 # 随记

@@ -45,6 +45,8 @@ import open_clip
 from transformers import AutoTokenizer
 import datetime
 
+from pdb import set_trace as st
+
 
 def get_args_parser():
     parser = argparse.ArgumentParser(description='ULIP training and evaluation', add_help=False)
@@ -60,6 +62,7 @@ def get_args_parser():
     # Model
     parser.add_argument('--model', default='ULIP_PN_SSG', type=str)
     # Training
+    # parser.add_argument('--epochs', default=250, type=int)
     parser.add_argument('--epochs', default=50, type=int)
     parser.add_argument('--warmup-epochs', default=1, type=int)
     parser.add_argument('--start-epoch', default=0, type=int)
@@ -273,6 +276,10 @@ def get_args_parser():
 
     parser.add_argument('--tune_visual', type=str, default='none', choices=['none', 'fine-tune','adapter', 'shallow_prompt', 'deep_prompt'])
 
+    parser.add_argument('--gene_lm', type=str, default=None, choices=['dnabert', 'geneformer', 'gpn', 'snn'])
+
+    parser.add_argument('--pt_snn', action='store_true', default=False)
+
     parser.add_argument('--normalization', type=str, default='data', choices=['clip', 'biomedclip', 'quiltclip', 'data'])
 
     parser.add_argument('--ori_biomedclip', action = 'store_true')
@@ -289,6 +296,19 @@ def get_args_parser():
     parser.add_argument('--half_label_and_pair', action='store_true', default=False)
 
     parser.add_argument('--only_vis_cls_head', action='store_true', default=False)
+
+    parser.add_argument('--use_max_lr', action='store_true', default=False)
+
+    parser.add_argument('--high_lr_ratio', type=float, default=1.0)
+
+    parser.add_argument('--k_shot', type=int, default=None)
+    parser.add_argument('--base2new_class', type=int, default=None)
+
+    parser.add_argument('--image_gene_cont_type', type=str, default='instance', choices=['instance', 'class'])
+
+    parser.add_argument('--w_image_text', type=float, default=1.0)
+    parser.add_argument('--w_image_omic', type=float, default=1.0)
+    parser.add_argument('--w_omic_text', type=float, default=1.0)
 
     parser.add_argument('--exp', type=str, default=None)
 
@@ -373,6 +393,7 @@ def main(args):
                 print('Freeze {}'.format(n)) 
 
         p_wd, p_non_wd = [], []
+        p_high_lr, p_normal_lr = [], [] 
         for n, p in model.named_parameters():
             if not p.requires_grad:
                 # print('Frozen {}'.format(n))
@@ -384,8 +405,23 @@ def main(args):
             else:
                 p_wd.append(p)
 
-        optim_params = [{"params": p_wd, "weight_decay": args.wd},
-                        {"params": p_non_wd, "weight_decay": 0}]
+            if 'omic' in n or 'prompt' in n: 
+                p_normal_lr.append(p)
+            elif 'adapter' in n or 'cls' in n:
+                p_high_lr.append(p)
+
+        # optim_params = [{"params": p_wd, "weight_decay": args.wd},
+        #                 {"params": p_non_wd, "weight_decay": 0}]
+
+        def inter(list1, list2):
+            return list(set(list1) & set(list2))
+
+        optim_params = [
+                {"params": inter(p_wd,p_normal_lr), "weight_decay": args.wd},
+                {"params": inter(p_non_wd,p_normal_lr), "weight_decay": 0},
+                {"params": inter(p_wd, p_high_lr), "weight_decay": args.wd},
+                {"params": inter(p_non_wd,p_high_lr), "weight_decay": 0}
+                ]
 
         optimizer = torch.optim.AdamW(optim_params, lr=args.lr, betas=args.betas,
                                         eps=args.eps, weight_decay=args.wd)
@@ -640,12 +676,12 @@ def main(args):
                     text_description_features = OrderedDict()
                     for k, v in caption_candidate.items():
                         tokens = tokenizer(v).cuda() #[5,77]
-                        description_features = utils.get_model(model).encode_text(text_token = tokens)
+                        description_features = utils.get_model(model).encode_text(text_token = tokens) # [5, 512]
                         description_features = description_features / description_features.norm(dim=-1, keepdim=True)
                         text_description_features[ k ]  =  description_features #[5,512]
                         # 3 * [5,512]
                 
-                args.text_description_features = text_description_features
+                    args.text_description_features = text_description_features
 
     criterion = models.get_loss(args).cuda(args.gpu)
 
@@ -729,7 +765,7 @@ def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule,
     batch_time = AverageMeter('Time', ':6.2f')
     data_time = AverageMeter('Data', ':6.2f')
     mem = AverageMeter('Mem (GB)', ':6.1f')
-    metric_names = models.get_metric_names(args.model)
+    metric_names = models.get_metric_names(args)
     iters_per_epoch = len(train_loader) // args.update_freq
     metrics = OrderedDict([(name, AverageMeter(name, ':.2e')) for name in metric_names])
     progress = ProgressMeter(
@@ -750,7 +786,18 @@ def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule,
         # update weight decay and learning rate according to their schedule
         it = iters_per_epoch * epoch + optim_iter  # global training iteration
         for k, param_group in enumerate(optimizer.param_groups):
-            param_group['lr'] = args.lr #lr_schedule[it]
+            if args.use_max_lr:
+                param_group['lr'] = args.lr
+            else:
+                if len(optimizer.param_groups) == 2:
+                    param_group['lr'] = lr_schedule[it]
+                elif (len(optimizer.param_groups) == 4) and args.high_lr_ratio>1:
+                    if k in [0,1]:
+                        param_group['lr'] = lr_schedule[it]
+                    elif k in [2,3]:
+                        param_group['lr'] = args.high_lr_ratio*lr_schedule[it]
+                    else:
+                        raise ValueError('Invalid param_group')
 
         # (x_path, x_grph, x_omic, censor, survtime, grade, index, sample_idx) = inputs
         # pc = inputs[3] # (8092,3)train
@@ -759,7 +806,7 @@ def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule,
         # image = inputs[4] #[3,224,224]
         (x_path, x_texts, x_omic, censor, survtime, grade, index, sample_idx) = inputs 
 
-        inputs = [tensor.cuda(args.gpu, non_blocking=True) for tensor in [x_path, x_omic, grade] ]
+        inputs = [tensor.cuda(args.gpu, non_blocking=True) for tensor in [x_path, x_omic] ]
 
         # inputs = {'images': inputs[0], 'gene': inputs[1], 'cls_label': inputs[2]} # torch.Size([1072, 1, 3, 77])  # torch.Size([1072, 1, 3, 77])
 
@@ -770,6 +817,7 @@ def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule,
                 inputs = [tensor.cuda(args.gpu, non_blocking=True) for tensor in [x_path] ]
                 outputs = model.forward_visual_cls_head(*inputs)
             else:
+                # st()
                 outputs = model(*inputs)
 
             outputs['cls_label'] = grade.cuda(args.gpu, non_blocking=True)
@@ -919,12 +967,20 @@ def test_zeroshot_pathomic_core(test_loader, model, tokenizer, args):
         # per_class_correct_top5 = collections.defaultdict(int)
         
         if args.use_text_prompt:
-            text_description_features = OrderedDict()
-            learnble_text_embed = model.prompt_learner() # 5个一组.., [15, 512]
-            for k, v in model.text_description.items():
-                text_embed_output = model.encode_text( text_token=model.text_token[k], text_embed=learnble_text_embed[k] )
+            if args.text_mode == 'sentence':
+                learnble_text_embed = model.prompt_learner()
+                text_embed_output = model.encode_text( text_token=model.text_token, text_embed=learnble_text_embed )
                 text_embed_output = text_embed_output / text_embed_output.norm(dim=-1, keepdim=True)
-                text_description_features[k] = text_embed_output
+                text_features = text_embed_output
+
+
+            elif args.text_mode == 'description':
+                text_description_features = OrderedDict()
+                learnble_text_embed = model.prompt_learner() # 5个一组.., [15, 512]
+                for k, v in model.text_description.items():
+                    text_embed_output = model.encode_text( text_token=model.text_token[k], text_embed=learnble_text_embed[k] )
+                    text_embed_output = text_embed_output / text_embed_output.norm(dim=-1, keepdim=True)
+                    text_description_features[k] = text_embed_output
 
         else:
             if args.text_mode == 'sentence':

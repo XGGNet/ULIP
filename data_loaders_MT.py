@@ -54,13 +54,14 @@ def pathomic_dataset(opt, data):
     
     n_data = len(train_dataset) # 1072
 
-    test_dataset = PathomicDataset(opt, data, split='test', mode=opt.mode)
+    # test_dataset = PathomicDataset(opt, data, split='test', mode=opt.mode)
+
     # print("number of testing samples:", len(test_data_loader)) # number of testing samples: 253
     # test_loader = torch.utils.data.DataLoader(
     #     dataset=test_data_loader, batch_size=opt.batch_size, 
     #     num_workers=4, shuffle=False, collate_fn=mixed_collate)
 
-    return train_dataset, test_dataset, n_data
+    return train_dataset, None, n_data
 
 
 
@@ -99,6 +100,39 @@ class PathomicDataset(Dataset):
         self.split = split
 
         self.opt = opt
+
+
+        self.k_shot = opt.k_shot 
+        self.base2new_class = opt.base2new_class
+
+        if self.base2new_class is not None:
+
+            ids_by_cls = {}
+            for id in range(len(self.g)):
+                try:
+                    ids_by_cls[ int(self.g[id]) ].append(id)
+                except:
+                    ids_by_cls[ int(self.g[id]) ] = [id]
+
+            test_ids = []
+            for cls, ids in ids_by_cls.items():
+                if cls == self.base2new_class:
+                    test_ids.extend(  ids  )
+
+            # len(ids_by_cls[0])
+            # 702
+            # len(ids_by_cls[1])
+            # 612
+            # len(ids_by_cls[2])
+            # 963
+
+            self.X_path = self.X_path[test_ids]
+            self.X_omic = self.X_omic[test_ids]
+            self.e = self.e[test_ids]
+            self.t = self.t[test_ids]
+            self.g = self.g[test_ids]
+
+            print(f'\n ##### Base2New_Class with Novel Class = {self.base2new_class} \n')
         
         if opt.label_dim == 2:
             ### 改成二分类，将标签中的1改为0, 标签中的2改为1
@@ -256,12 +290,69 @@ class Pathomic_InstanceSample(Dataset):
         self.is_sample = is_sample
 
         self.pos_mode = opt.pos_mode # 构造正样本的方式
+        
 
-        self.X_path = data[split]['x_path']
-        self.X_omic = data[split]['x_omic']  # 
+        self.k_shot = opt.k_shot 
+        self.base2new_class = opt.base2new_class
+
+
+        self.X_path = data[split]['x_path'] # [1072,]
+        self.X_omic = data[split]['x_omic']  # [1072, 80]
         self.e = data[split]['e']
         self.t = data[split]['t']
-        self.g = data[split]['g']
+        self.g = data[split]['g'] # [1072,]
+
+        # group self.g by its labels..
+        if self.k_shot is not None:
+
+            ids_by_cls = {}
+            for id in range(len(self.g)):
+                try:
+                    ids_by_cls[ int(self.g[id]) ].append(id)
+                except:
+                    ids_by_cls[ int(self.g[id]) ] = [id]
+
+            train_ids = []
+            for cls, ids in ids_by_cls.items():
+                train_ids.extend(  ids[:self.k_shot]  )
+
+            self.X_path = self.X_path[train_ids]
+            self.X_omic = self.X_omic[train_ids]
+            self.e = self.e[train_ids]
+            self.t = self.t[train_ids]
+            self.g = self.g[train_ids]
+
+            print(f'\n ##### X-shot with K={self.k_shot} \n')
+
+        if self.base2new_class is not None:
+
+            ids_by_cls = {}
+            for id in range(len(self.g)):
+                try:
+                    ids_by_cls[ int(self.g[id]) ].append(id)
+                except:
+                    ids_by_cls[ int(self.g[id]) ] = [id]
+
+            # len(ids_by_cls[0])
+            # 315
+            # len(ids_by_cls[1])
+            # 340
+            # len(ids_by_cls[2])
+            # 417
+
+            train_ids = []
+            for cls, ids in ids_by_cls.items():
+                if cls != self.base2new_class:
+                    train_ids.extend(  ids  )
+
+            self.X_path = self.X_path[train_ids]
+            self.X_omic = self.X_omic[train_ids]
+            self.e = self.e[train_ids]
+            self.t = self.t[train_ids]
+            self.g = self.g[train_ids]
+
+            print(f'\n ##### Base2New_Class with Novel Class = {self.base2new_class} \n')
+
 
         self.tokenizer = opt.tokenizer
         self.model =opt.model

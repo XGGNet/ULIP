@@ -7,3 +7,5 @@ biomed-clip-share/
 src/
 BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext/
 wandb/
+run.sh
+TODO.md
