@@ -124,3 +124,10 @@ CUDA_VISIBLE_DEVICES=1 python main_omic_medvlm.py --model ULIP_GENE_LM_QuiltCLIP
 CUDA_VISIBLE_DEVICES=2 python main_omic_medvlm.py --model ULIP_GENE_LM_QuiltCLIP --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 --exp text-tune_visual-adapter_geneformer-cont_lr-div-r10_loss-w-1-0.5-0.5_base2new_cls=1 --base2new_class 1 --w_image_text 1 --w_image_omic 0.5 --w_omic_text 0.5 --wandb 
 
 CUDA_VISIBLE_DEVICES=3 python main_omic_medvlm.py --model ULIP_GENE_LM_QuiltCLIP --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 --exp text-tune_visual-adapter_geneformer-cont_lr-div-r10_loss-w-1-0.5-0.5_base2new_cls=2 --base2new_class 2 --w_image_text 1 --w_image_omic 0.5 --w_omic_text 0.5 --wandb 
+
+
+
+### 0905
+
+CUDA_VISIBLE_DEVICES=0 python main_omic_medvlm.py --model ULIP_GENE_LM_QuiltCLIP --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 
+--exp th200~text-tune_visual-adapter_geneformer-cont_lr-div-r10_loss-w-1-0.5-0.5  --w_image_text 1 --w_image_omic 0.5 --w_omic_text 0.5 --wandb 

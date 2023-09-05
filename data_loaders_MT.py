@@ -46,7 +46,9 @@ def omic_transform(omic_data, transform='drop', rate=0.2):
 
 def pathomic_dataset(opt, data):
 
+    # train_dataset = Pathomic_InstanceSample(opt, data, split='train', mode=opt.mode)
     train_dataset = Pathomic_InstanceSample(opt, data, split='train', mode=opt.mode)
+
     print("number of training samples:", len(train_dataset))  # number of training samples: 1072
     # train_loader = torch.utils.data.DataLoader(
     #     dataset=custom_data_loader, batch_size=opt.batch_size,  # 16
@@ -266,9 +268,9 @@ class PathomicDataset(Dataset):
         # tokenized_captions.append(self.tokenizer(caption))
         # tokenized_captions = torch.stack(tokenized_captions) 
         if self.split == 'train':
-            return (self.train_transforms(single_X_path), caption , single_X_omic, single_e, single_t, single_g)
+            return (self.train_transforms(single_X_path), caption , single_X_omic, single_e, single_t, single_g, self.X_path[index].split('/')[-1][:12] )
         elif self.split == 'test':
-            return (self.test_transforms(single_X_path), caption, single_X_omic, single_e, single_t, single_g)
+            return (self.test_transforms(single_X_path), caption, single_X_omic, single_e, single_t, single_g, self.X_path[index].split('/')[-1][:12] )
 
     def __len__(self):
         return len(self.X_path)
@@ -301,6 +303,8 @@ class Pathomic_InstanceSample(Dataset):
         self.e = data[split]['e']
         self.t = data[split]['t']
         self.g = data[split]['g'] # [1072,]
+
+
 
         # group self.g by its labels..
         if self.k_shot is not None:
@@ -451,6 +455,10 @@ class Pathomic_InstanceSample(Dataset):
         single_X_path = Image.open(self.X_path[index]).convert('RGB')
         single_X_omic = torch.tensor(self.X_omic[index]).type(torch.FloatTensor) 
         # Whole ==> 1024,1024     Patch ==> 512,512
+
+
+        # x_case = self.X_path[index].split('/')[-1][:12] 
+        # x_case = torch.tensor(x_case)
 
 
         # return (self.transforms(single_X_path), 0, single_X_omic, single_e, single_t, single_g)
@@ -616,13 +624,460 @@ class Pathomic_InstanceSample(Dataset):
 
 
         if self.split == 'train':
-            return (self.train_transforms(single_X_path), tokenized_captions , single_X_omic, single_e, single_t, single_g, index, sample_idx)
+            return (self.train_transforms(single_X_path), tokenized_captions, single_X_omic, single_e, single_t, single_g, index, sample_idx,  self.X_path[index].split('/')[-1][:12])
         elif self.split == 'test':
-            return (self.test_transforms(single_X_path), tokenized_captions, single_X_omic, single_e, single_t, single_g, index, sample_idx)
+            return (self.test_transforms(single_X_path), tokenized_captions, single_X_omic, single_e, single_t, single_g, index, sample_idx, self.X_path[index].split('/')[-1][:12] )
 
 
     def __len__(self):
         return len(self.X_path)
+
+
+
+
+class PathomicDataset_AddGraph(Dataset):
+    def __init__(self, opt, data, split, mode='omic'):
+        """
+        Args:
+            X = data
+            e = overall survival event
+            t = overall survival in months
+        """
+        # print(data[split]['x_path'])
+        self.X_path = data[split]['x_path']
+        self.X_omic = data[split]['x_omic']
+        self.e = data[split]['e']
+        self.t = data[split]['t']
+        self.g = data[split]['g']
+        self.mode = mode
+
+        self.split = split
+
+        self.opt = opt
+
+
+        self.k_shot = opt.k_shot 
+        self.base2new_class = opt.base2new_class
+
+
+        self.X_case_path = {}
+        self.X_case_omic = {}
+        self.label = {}
+        for i, x_path in enumerate( self.X_path):
+            case_name =  x_path.split('/')[-1][:12]
+            if case_name not in self.X_case_path.keys():
+                self.X_case_path[case_name] = []
+            self.X_case_path[case_name].append(str(x_path)) # 531
+            self.label[case_num] = int(data[split]['g'][i])
+            self.X_case_omic[case_name] = data[split]['x_omic'][i] # 80
+
+
+
+        if self.base2new_class is not None:
+
+            ids_by_cls = {}
+            for id in range(len(self.g)):
+                try:
+                    ids_by_cls[ int(self.g[id]) ].append(id)
+                except:
+                    ids_by_cls[ int(self.g[id]) ] = [id]
+
+            test_ids = []
+            for cls, ids in ids_by_cls.items():
+                if cls == self.base2new_class:
+                    test_ids.extend(  ids  )
+
+            # len(ids_by_cls[0])
+            # 702
+            # len(ids_by_cls[1])
+            # 612
+            # len(ids_by_cls[2])
+            # 963
+
+            self.X_path = self.X_path[test_ids]
+            self.X_omic = self.X_omic[test_ids]
+            self.e = self.e[test_ids]
+            self.t = self.t[test_ids]
+            self.g = self.g[test_ids]
+
+            print(f'\n ##### Base2New_Class with Novel Class = {self.base2new_class} \n')
+        
+        if opt.label_dim == 2:
+            ### 改成二分类，将标签中的1改为0, 标签中的2改为1
+            label = self.g.astype(int)
+            label[label == 1] = 0
+            label[label == 2] = 1
+            self.g = label
+
+        # self.transforms = transforms.Compose([
+        #                     transforms.RandomCrop(opt.input_size_path),
+        #                     transforms.ToTensor(),
+        #                     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+
+        if opt.normalization == 'clip':
+            normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],std=[0.229, 0.224, 0.225])
+        elif opt.normalization == 'biomedclip':
+            normalize = transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
+        elif opt.normalization == 'quiltclip':
+            normalize = transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
+        elif opt.normalization == 'data':
+            normalize = transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        
+
+        self.train_transforms = transforms.Compose([
+                            transforms.RandomHorizontalFlip(0.5),
+                            transforms.RandomVerticalFlip(0.5),
+                            transforms.RandomCrop(opt.input_size_path),
+                            # transforms.Resize([opt.input_size_path, opt.input_size_path]),
+                            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.05, hue=0.01),
+                            transforms.ToTensor(),
+                            # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))  
+                            normalize
+                            ])
+        
+        self.test_transforms = transforms.Compose([
+                            # transforms.Resize([opt.input_size_path, opt.input_size_path]),
+                            transforms.ToTensor(),
+                            # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                            normalize
+                                                 ])
+
+    def __getitem__(self, index):
+        # single_e = torch.tensor(self.e[index]).type(torch.FloatTensor)
+        # single_t = torch.tensor(self.t[index]).type(torch.FloatTensor)
+        # single_g = torch.tensor(self.g[index]).type(torch.LongTensor)
+
+        # if self.mode == "path" or self.mode == 'pathpath':
+        #     single_X_path = Image.open(self.X_path[index]).convert('RGB')
+        #     # print(single_X_path, self.transforms(single_X_path).shape)
+        #     return (self.transforms(single_X_path), 0, 0, single_e, single_t, single_g)
+        # elif self.mode == "omic" or self.mode == 'omicomic':
+        #     single_X_omic = torch.tensor(self.X_omic[index]).type(torch.FloatTensor)
+        #     return (0, 0, single_X_omic, single_e, single_t, single_g)
+        # elif self.mode == "pathomic":
+        #     single_X_path = Image.open(self.X_path[index]).convert('RGB')
+        #     single_X_omic = torch.tensor(self.X_omic[index]).type(torch.FloatTensor)
+        #     # print(single_X_path, self.transforms(single_X_path).shape)
+
+        case_name = self.X_case_path.keys()[index]
+        X_path = []
+        for file_dir in range(len(self.X_case_path[case_name])):
+            X_path.append(Image.open(file_dir).convert('RGB'))
+        X_path = np.concatenate(X_path, axis=0)
+        X_path = torch.tensor(X_path).type(torch.FloatTensor) 
+
+        X_omic = self.X_case_omic[case_name] 
+        X_omic = torch.tensor(X_omic).type(torch.FloatTensor)
+        
+        label = torch.tensor(self.label[case_name] ).type(torch.FloatTensor)
+        
+
+
+        if self.opt.text_mode == 'sentence':
+            grading_name = {0: 'II', 1: 'III', 2: 'IV'}
+            # caption = f'A pathology slide with WHO grading {grading_name[ int(single_g) ]}'
+            # templates = ['A pathology slide with grade {} gliomas']
+            caption = f'A pathology slide with grade {grading_name[ int(label) ]} gliomas'
+        elif self.opt.text_mode == 'description':
+            # caption_candidate = {
+            #     'A pathology slide with grade II gliomas':
+            #     [
+            #     "The cells tend to be relatively uniform in size and shape, and they may be arranged in a pattern that resembles the normal organization of tissue.",
+            #     "The cells have a relatively low rate of division (mitotic rate) and may be surrounded by normal brain tissue.",
+            #     "The tumor may have a well-defined border between the tumor and the surrounding tissue."
+            #     ],
+            #     'A pathology slide with grade III gliomas':
+            #     [
+            #     "The cells tend to be more variable in size and shape, and they may show signs of abnormal division (mitotic figures).",
+            #     "The cells may be arranged in a more irregular pattern and may infiltrate the surrounding brain tissue.",
+            #     "There may be areas of dead tissue (necrosis) within the tumor."
+            #     ],
+            #     ' A pathology slide with grade IV gliomas':
+            #     [
+            #     'The cells tend to be highly abnormal in appearance and may be very variable in size and shape, with large, irregular nuclei.',
+            #     'There may be a high degree of mitotic activity, with many cells dividing rapidly.',
+            #     'The tumor may have a very irregular border and may infiltrate extensively into the surrounding tissue.'
+            #     'There may be areas of necrosis within the tumor.'
+            #     ]
+            # }
+            caption_candidate = {
+                'A pathology slide with WHO grade II gliomas':
+                [
+                'Infiltrative growth pattern',
+                'Relatively uniform cells with round or oval nuclei and minimal pleomorphism',
+                'Low mitotic activity',
+                'Absence of microvascular proliferation',
+                'Absence of necrosis',
+
+                # 'A pathology slide with grade II gliomas'
+                ],
+
+                'A pathology slide with WHO grade III gliomas':
+                [
+                # "Increased cellularity compared to grade II gliomas",
+                # "Mild to moderate nuclear atypia and pleomorphism.",
+                # "Higher mitotic activity compared to grade II gliomas.",
+                # "Absence or minimal microvascular proliferation.",
+                # "Absence or focal necrosis.",
+                "Increased cellularity",
+                "Mild to moderate nuclear atypia and pleomorphism.",
+                "Higher mitotic activity.",
+                "Absence or minimal microvascular proliferation.",
+                "Absence or focal necrosis.",
+
+                # 'A pathology slide with grade III gliomas'
+                ],
+
+                'A pathology slide with WHO grade IV gliomas':
+                [
+                "Highly cellular and pleomorphic tumor cells",
+                "Marked nuclear atypia and pleomorphism.",
+                "High mitotic activity",
+                "Prominent microvascular proliferation",
+                "Presence of necrosis, often with pseudopalisading pattern (tumor cells surrounding necrotic areas).",
+
+                # 'A pathology slide with grade IV gliomas'
+                ]
+            }
+            caption = list(caption_candidate.values())[int(label)]
+            
+
+            
+            
+        # tokenized_captions.append(self.tokenizer(caption))
+        # tokenized_captions = torch.stack(tokenized_captions) 
+        if self.split == 'train':
+            return (    [self.train_transforms(single_X_path) for single_X_path in X_path], caption , X_omic, label, index)
+        elif self.split == 'test':
+            return (    [self.test_transforms(single_X_path) for single_X_path in X_path], caption, X_omic, label, index)
+
+    def __len__(self):
+        return len(self.X_case_path)
+
+
+class Pathomic_InstanceSample_AddGraph(Dataset):
+    def __init__(self, opt, data, split, mode='omic', is_sample=True):
+        super(Pathomic_InstanceSample_AddGraph, self).__init__()
+
+        '''
+        对比样本
+        '''
+        self.p = opt.nce_p  # 300 正样本
+        self.k = opt.nce_k  # 700 负样本
+
+        self.is_sample = is_sample
+
+        self.pos_mode = opt.pos_mode # 构造正样本的方式
+
+        
+        self.k_shot = opt.k_shot 
+        self.base2new_class = opt.base2new_class
+
+
+        self.X_path = data[split]['x_path'] # [1072,]
+        self.X_omic = data[split]['x_omic']  # [1072, 80]
+        self.e = data[split]['e']
+        self.t = data[split]['t']
+        self.g = data[split]['g'] # [1072,]
+
+        self.X_case_path = {}
+        self.X_case_omic = {}
+        self.label = {}
+        for i, x_path in enumerate( self.X_path):
+            case_name =  x_path.split('/')[-1][:12]
+            if case_name not in self.X_case_path.keys():
+                self.X_case_path[case_name] = []
+            self.X_case_path[case_name].append(str(x_path)) # 531
+            self.label[case_name] = int(data[split]['g'][i])
+            self.X_case_omic[case_name] = data[split]['x_omic'][i] # 80
+
+        # group self.g by its labels..
+        if self.k_shot is not None:
+
+            ids_by_cls = {}
+            for id in range(len(self.g)):
+                try:
+                    ids_by_cls[ int(self.g[id]) ].append(id)
+                except:
+                    ids_by_cls[ int(self.g[id]) ] = [id]
+
+            train_ids = []
+            for cls, ids in ids_by_cls.items():
+                train_ids.extend(  ids[:self.k_shot]  )
+
+            self.X_path = self.X_path[train_ids]
+            self.X_omic = self.X_omic[train_ids]
+            self.e = self.e[train_ids]
+            self.t = self.t[train_ids]
+            self.g = self.g[train_ids]
+
+            print(f'\n ##### X-shot with K={self.k_shot} \n')
+
+        if self.base2new_class is not None:
+
+            ids_by_cls = {}
+            for id in range(len(self.g)):
+                try:
+                    ids_by_cls[ int(self.g[id]) ].append(id)
+                except:
+                    ids_by_cls[ int(self.g[id]) ] = [id]
+
+            # len(ids_by_cls[0])
+            # 315
+            # len(ids_by_cls[1])
+            # 340
+            # len(ids_by_cls[2])
+            # 417
+
+            train_ids = []
+            for cls, ids in ids_by_cls.items():
+                if cls != self.base2new_class:
+                    train_ids.extend(  ids  )
+
+            self.X_path = self.X_path[train_ids]
+            self.X_omic = self.X_omic[train_ids]
+            self.e = self.e[train_ids]
+            self.t = self.t[train_ids]
+            self.g = self.g[train_ids]
+
+            print(f'\n ##### Base2New_Class with Novel Class = {self.base2new_class} \n')
+
+
+        self.tokenizer = opt.tokenizer
+        self.model =opt.model
+        # self.train_transform = opt.train_transform
+
+        self.mode = mode  # 'pathomic'
+        self.task = opt.task # 'grad'
+
+        self.split = split
+        
+        # self.transforms = TransformTwice(transforms.Compose([
+        #                     transforms.RandomHorizontalFlip(0.5),
+        #                     transforms.RandomVerticalFlip(0.5),
+        #                     transforms.RandomCrop(opt.input_size_path), # 512
+        #                     # transforms.Resize([opt.input_size_path, opt.input_size_path]),
+        #                     transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.05, hue=0.01),
+        #                     transforms.ToTensor(),
+        #                     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]))
+
+        if opt.normalization == 'clip':
+            normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],std=[0.229, 0.224, 0.225])
+        elif opt.normalization == 'biomedclip':
+            normalize = transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
+        elif opt.normalization == 'quiltclip':
+            normalize = transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
+        elif opt.normalization == 'data':
+            normalize = transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            
+        self.train_transforms = transforms.Compose([
+                            transforms.RandomHorizontalFlip(0.5),
+                            transforms.RandomVerticalFlip(0.5),
+                            transforms.RandomCrop(opt.input_size_path),
+                            # transforms.Resize([opt.input_size_path, opt.input_size_path]),
+                            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.05, hue=0.01),
+                            transforms.ToTensor(),
+                            # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                            normalize
+                            ])
+        
+        self.test_transforms = transforms.Compose([
+                            transforms.ToTensor(),
+                            # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                            normalize
+                            ])
+
+        self.num_samples = len(self.X_case_path) # 1072
+
+        if opt.task == "grad":
+            ## newly added, 2021/12/22
+            if opt.label_dim == 3:  # enter here
+                num_classes = 3
+                label = self.g.astype(int)
+            
+            elif opt.label_dim == 2:
+                ### 改成二分类，将标签中的1改为0, 标签中的2改为1
+                num_classes = 2
+                label = self.g.astype(int)
+                print("original labels:", label)
+                label[label == 1] = 0
+                label[label == 2] = 1
+                print("modified labels:", label)
+                self.g = label
+
+            # self.cls_positive = [[] for i in range(num_classes)]
+            # for i in range(self.num_samples): # self.num_samples: 1072, len(label) = 1072
+            #     self.cls_positive[label[i]].append(i) # 按类别划分
+
+            
+            # # 收集所有不属于同一类别的sample id
+            # self.cls_negative = [[] for i in range(num_classes)]
+            # for i in range(num_classes):
+            #     for j in range(num_classes):
+            #         if j == i:
+            #             continue
+            #         self.cls_negative[i].extend(self.cls_positive[j])
+            
+
+            # self.cls_positive = [np.asarray(self.cls_positive[i]) for i in range(num_classes)]  # 取值范围 0~1071   315+340+417
+            # self.cls_negative = [np.asarray(self.cls_negative[i]) for i in range(num_classes)]  # 取值范围 0~1071   757+723+655
+
+            # self.cls_positive = np.asarray(self.cls_positive)
+            # self.cls_negative = np.asarray(self.cls_negative)
+            
+            
+            # print("positive:", self.cls_positive)
+            # print("negative:", self.cls_negative)
+
+            self.opt = opt
+
+    def __getitem__(self, index):
+
+        # single_e = torch.tensor(self.e[index]).type(torch.FloatTensor) # tensor(1.)
+        # single_t = torch.tensor(self.t[index]).type(torch.FloatTensor) # tensor(395.)
+        # single_g = torch.tensor(self.g[index]).type(torch.LongTensor) # tensor(2)  grading
+
+        case_name = self.X_case_path.keys()[index]
+        X_path = []
+        for file_dir in range(len(self.X_case_path[case_name])):
+            X_path.append(Image.open(file_dir).convert('RGB'))
+        X_path = np.concatenate(X_path, axis=0)
+        X_path = torch.tensor(X_path).type(torch.FloatTensor) 
+
+        X_omic = self.X_case_omic[case_name] 
+        X_omic = torch.tensor(X_omic).type(torch.FloatTensor)
+
+        label = torch.tensor(self.label[case_name] ).type(torch.FloatTensor)
+
+
+        # single_X_omic = torch.tensor(self.X_omic[index]).type(torch.FloatTensor) 
+        # Whole ==> 1024,1024     Patch ==> 512,512
+
+
+        # return (self.transforms(single_X_path), 0, single_X_omic, single_e, single_t, single_g)
+
+        # print("sample index and label:", index, single_g)
+
+        # if self.task == "surv": # 生存预测
+        #     pos_idx = index
+        #     all_neg_idx = list(range(0, self.num_samples))
+        #     all_neg_idx.remove(index)
+        #     replace = True if self.k > len(all_neg_idx) else False
+        #     neg_idx = np.random.choice(all_neg_idx, self.k, replace=replace)
+
+        if self.task == "grad": # grading分类
+            
+            tokenized_captions = []
+
+        if self.split == 'train':
+            return (    [self.train_transforms(single_X_path) for single_X_path in X_path], tokenized_captions , X_omic, label, index)
+        elif self.split == 'test':
+            return (    [self.test_transforms(single_X_path) for single_X_path in X_path], tokenized_captions, X_omic, label, index)
+
+
+    def __len__(self):
+        return len(self.X_case_path)
+
 
 
 class TransformTwice:

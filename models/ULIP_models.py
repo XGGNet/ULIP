@@ -30,7 +30,24 @@ from thop import profile
 import pandas as pd
 from collections import OrderedDict
 
+import dgl
+from scipy.stats import pearsonr
+
+import torch as th
+
 # from coop import *
+
+from graph_models import (
+    GCN,
+    GAT,
+    NTPoolGCN,
+    GIN,
+    HGT,
+    HEATNet2,
+    HEATNet4,
+    HeteroRGCN,
+)
+
 
 
 class LayerNorm(nn.LayerNorm):
@@ -946,6 +963,365 @@ class GeneLIP_WITH_QUILTCLIP_GeneLM(nn.Module):
                 }
 
 
+class GeneLIP_WITH_QUILTCLIP_GeneLM_Graph(nn.Module):
+    def __init__(self, gene_encoder, vl_model, gnn_model, **kwargs):
+        # super().__init__(ssl_mlp_dim, ssl_emb_dim, **kwargs)
+        super().__init__()
+        kwargs = EasyDict(kwargs)
+        self.context_length = kwargs.context_length
+        self.vision_width = kwargs.vision_width
+        # self.visual = kwargs.vision_model
+
+        self.args=  args  = kwargs.args
+
+        self.transformer = Transformer(
+            width=kwargs.transformer_width,
+            layers=kwargs.transformer_layers,
+            heads=kwargs.transformer_heads,
+            attn_mask=self.build_attention_mask(),
+        )
+
+        self.vocab_size = kwargs.vocab_size
+        self.token_embedding = nn.Embedding(kwargs.vocab_size, kwargs.transformer_width)
+        self.positional_embedding = nn.Parameter(torch.empty(self.context_length, kwargs.transformer_width))
+        self.ln_final = LayerNorm(kwargs.transformer_width)
+
+        # self.image_projection = nn.Parameter(torch.empty(kwargs.vision_width, kwargs.embed_dim))
+        self.text_projection = nn.Parameter(torch.empty(kwargs.transformer_width, kwargs.embed_dim))
+        # self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+
+        self.initialize_parameters()
+
+
+        self.gene_encoder = gene_encoder
+
+        # self.omic_to_embedding = nn.Parameter(torch.empty(80, kwargs.omic_feat_dims))
+        # nn.init.normal_(self.omic_to_embedding, std=kwargs.omic_feat_dims ** -0.5)
+
+        self.args =  kwargs.args
+        
+        if self.args.gene_lm != 'snn':
+
+          self.omic_to_embedding = nn.Linear(80, kwargs.omic_feat_dims)
+
+        self.omic_projection = nn.Parameter(torch.empty(kwargs.omic_feat_dims, 512))
+        nn.init.normal_(self.omic_projection, std=512 ** -0.5)
+
+        self.image_projection = vl_model.visual.proj
+
+        self.logit_scale = vl_model.logit_scale
+
+        self.visual = vl_model.visual
+        self.visual.proj = None
+        # vision_model = timm.create_model('vit_base_patch32_224', num_classes=0)
+
+        self.tokenizer = tokenizer = self.args.tokenizer
+
+        self.text_mode = args.text_mode
+
+
+        self.tune_visual = kwargs.args.tune_visual
+        if self.tune_visual.lower() == 'adapter' :
+            print("Use visual adapter!")
+            self.adapter = Adapter(kwargs.vision_width,4)
+
+        if self.args.only_vis_cls_head:
+            self.cls_head = nn.Linear(512, 3)
+
+        
+        self.use_text_prompt = self.args.use_text_prompt 
+        
+        
+        labels = ['II', 'III', 'IV']
+        if args.text_mode == 'sentence':
+            templates = ['A pathology slide with WHO grade {} gliomas']
+            self.text_sentence = [templates[0].format(l) for l in labels] 
+        if args.text_mode == 'description':
+            self.text_description = {
+              'A pathology slide with WHO grade II gliomas':
+              [
+              'Infiltrative growth pattern',
+              'Relatively uniform cells with round or oval nuclei and minimal pleomorphism',
+              'Low mitotic activity',
+              'Absence of microvascular proliferation',
+              'Absence of necrosis',
+
+              # 'A pathology slide with grade II gliomas'
+              ],
+
+              'A pathology slide with WHO grade III gliomas':
+              [
+              # "Increased cellularity compared to grade II gliomas",
+              # "Mild to moderate nuclear atypia and pleomorphism.",
+              # "Higher mitotic activity compared to grade II gliomas.",
+              # "Absence or minimal microvascular proliferation.",
+              # "Absence or focal necrosis.",
+              "Increased cellularity",
+              "Mild to moderate nuclear atypia and pleomorphism.",
+              "Higher mitotic activity.",
+              "Absence or minimal microvascular proliferation.",
+              "Absence or focal necrosis.",
+
+              # 'A pathology slide with grade III gliomas'
+              ],
+
+              'A pathology slide with WHO grade IV gliomas':
+              [
+              "Highly cellular and pleomorphic tumor cells",
+              "Marked nuclear atypia and pleomorphism.",
+              "High mitotic activity",
+              "Prominent microvascular proliferation",
+              "Presence of necrosis, often with pseudopalisading pattern (tumor cells surrounding necrotic areas).",
+
+              # 'A pathology slide with grade IV gliomas'
+              ]
+            }
+            # 把key的字符串加在其value的每一个字符串前面
+            # caption_candidate = {k: [k + ', which has ' + i for i in v] for k, v in caption_candidate.items()}
+
+        if self.use_text_prompt:
+            cfg = {'N_CTX': 16 , 'CLASS_TOKEN_POSITION': 'end'}
+            # n_prompt = 1 if self.text_prompt=='sentence' else 5
+            # n_cls =  3
+            # if self.text_mode  == 'sentence':
+            #     self.prompt_learner
+            # elif self.text_mode == 'description':
+
+            if args.text_mode == 'sentence':
+                self.prompt_learner = PromptLearner(cfg=cfg, args=args, n_cls=3, n_des = 5,  clip_model=vl_model, tokenizer=tokenizer,  text = self.text_sentence)
+            elif args.text_mode == 'description':
+                self.prompt_learner = PromptLearner(cfg=cfg, args=args, n_cls=3, n_des = 5,  clip_model=vl_model, tokenizer=tokenizer,  text = self.text_description)
+
+            self.text_token = self.prompt_learner.text_token
+        else:
+            if args.text_mode == 'sentence':
+                # texts.app[t.format(l) for t in templates]
+                text_token = tokenizer(text_sentence).cuda()
+            elif args.text_mode == 'description':
+                text_token = OrderedDict()
+                for k, v in self.text_description.items():
+                    tokens = tokenizer(v).cuda() #[5,77]
+                    text_token[k] = tokens
+            self.text_token = text_token
+
+
+        self.gnn = gnn_model
+                
+              
+    def encode_image(self, image):
+        image_feat = self.visual(image)  #[253,512]
+      
+        if self.tune_visual.lower() == 'adapter':
+            x = self.adapter(image_feat)
+            ratio = 0.2
+            image_feat = ratio * x + (1 - ratio) * image_feat
+        
+        x = image_feat @ self.image_projection
+
+        return x
+
+    def encode_text(self, text_token, text_embed=None):
+        # Eval [5,77]   Train [1,5,77]
+        # if len(text.shape) >2:
+        #   text = text.squeeze(0)
+        if self.use_text_prompt: # prompt tuning时, 从prompt embedding开始
+            x = text_embed + self.positional_embedding
+        else:
+            x = self.token_embedding(text_token)  # [batch_size, n_ctx, d_model]   torch.Size([5, 77, 512])
+            x = x + self.positional_embedding
+
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.transformer(x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        x = self.ln_final(x) # 1,77,512
+        # bz, context_length, embed_dim
+
+        # take features from the eot embedding (eot_token is the highest number in each sequence)
+        x = x[torch.arange(x.shape[0]), text_token.argmax(dim=-1)] @ self.text_projection  # 1,512
+
+        return x
+
+    def build_attention_mask(self):
+        # lazily create causal attention mask, with full attention between the vision tokens
+        # pytorch uses additive attention mask; fill with -inf
+        mask = torch.empty(self.context_length, self.context_length)
+        mask.fill_(float("-inf"))
+        mask.triu_(1)  # zero out the lower diagonal
+        return mask
+
+    def initialize_parameters(self):
+        nn.init.normal_(self.token_embedding.weight, std=0.02)
+        nn.init.normal_(self.positional_embedding, std=0.01)
+
+        proj_std = (self.transformer.width ** -0.5) * ((2 * self.transformer.layers) ** -0.5)
+        attn_std = self.transformer.width ** -0.5
+        fc_std = (2 * self.transformer.width) ** -0.5
+        for block in self.transformer.resblocks:
+            nn.init.normal_(block.attn.in_proj_weight, std=attn_std)
+            nn.init.normal_(block.attn.out_proj.weight, std=proj_std)
+            nn.init.normal_(block.mlp.c_fc.weight, std=fc_std)
+            nn.init.normal_(block.mlp.c_proj.weight, std=proj_std)
+
+        # nn.init.normal_(self.image_projection, std=self.vision_width ** -0.5)
+        nn.init.normal_(self.text_projection, std=self.transformer.width ** -0.5)
+
+    # def encode_pc(self, pc):
+    #     pc_feat = self.point_encoder(pc)
+    #     pc_embed = pc_feat @ self.pc_projection
+    #     return pc_embed
+
+    def encode_omic(self, x_omic):
+        if self.args.gene_lm == 'snn':
+            omic_feat = self.gene_encoder(x_omic=x_omic)[0]
+            omic_embed = omic_feat @ self.omic_projection
+
+        else:
+            omic_embed = self.omic_to_embedding(x_omic).unsqueeze(1) # [N, len_seq=1, n_embed]
+
+            if self.args.gene_lm == 'geneformer':
+              omic_feat = self.gene_encoder(omic_embed)[0] # N, len_seq=1, n_embed 
+            elif self.args.gene_lm == 'dnabert':
+              omic_feat = self.gene_encoder(omic_embed,attention_mask=torch.ones_like(omic_embed)[:,:,0], output_all_encoded_layers=False,subset_mask=None)[0]
+            elif self.args.gene_lm == 'gpn':
+              omic_feat = self.gene_encoder(omic_embed)
+              
+            omic_feat = torch.mean(omic_feat, dim=1) # 把seq进行mean
+            omic_embed = omic_feat @ self.omic_projection # dimension: n_embed -> n_clip_embed
+
+        return omic_embed
+
+    def forward_visual_cls_head(self, image):
+        image_embed = self.encode_image(image)
+        image_embed = image_embed / image_embed.norm(dim=-1, keepdim=True)
+
+        logits = self.cls_head(image_embed)
+
+        return { 
+              'logits': logits
+                }
+
+    def find_index(self,lst,x):
+        indexes = []
+        for i in range(len(lst)):
+            if lst[i] == x:
+                indexes.append(i)
+        return indexes
+
+
+    def forward(self, image, gene, case_name):
+
+        image_embed = self.encode_image(image)
+        image_embed = image_embed / image_embed.norm(dim=-1, keepdim=True)
+
+        if self.use_text_prompt: 
+            if self.text_mode == 'sentence':
+                learnble_text_embed = self.prompt_learner()
+                text_embed = self.encode_text( text_token=self.text_token, text_embed=learnble_text_embed )
+            elif self.text_mode == 'description':
+                text_embed = OrderedDict()
+                learnble_text_embed = self.prompt_learner() # 5个一组.., [15, 512]
+                for k, v in self.text_description.items():
+                    text_embed_output = self.encode_text( text_token=self.text_token[k], text_embed=learnble_text_embed[k] )
+                    text_embed_output = text_embed_output / text_embed_output.norm(dim=-1, keepdim=True)
+                    text_embed[k] = text_embed_output
+        else:
+            if self.text_mode == 'sentence':
+                text_embed = self.encode_text(text_token = self.text_token)
+                text_embed = text_embed / text_embed.norm(dim=-1, keepdim=True)
+            elif self.text_mode == 'description':
+                  text_embed = OrderedDict()
+                  for k, v in self.text_description.items():
+                      text_embed_output = self.encode_text( text_token=self.text_token[k] )
+                      text_embed_output = text_embed_output / text_embed_output.norm(dim=-1, keepdim=True)
+                      text_embed[k] = text_embed_output
+
+        omic_embed = self.encode_omic(gene)
+        omic_embed = omic_embed / omic_embed.norm(dim=-1, keepdim=True)
+
+        ## constuct graph
+        case_name_base = set(case_name) # 531
+        # 引用case_name
+        case_name_base = list(case_name_base)
+        
+        graph_logits = []
+        for case_base in case_name_base:
+            indexes = self.find_index(case_name, case_base)
+
+            # image_node_feat = image_embed[indexes].detach().cpu()
+            # gene_node_feat = omic_embed[ indexes[0] ].detach().cpu()
+
+            image_node_feat = image_embed[indexes]
+            gene_node_feat = omic_embed[ indexes[0] ]
+
+            text_node_feat = torch.zeros(15,512).to('cuda')
+            if len(image_node_feat.shape)==1:
+                image_node_feat = image_node_feat.unsqueeze(0)
+            if len(gene_node_feat.shape)==1:
+                gene_node_feat = gene_node_feat.unsqueeze(0)
+            cnt =0
+            for key, value in text_embed.items():
+                for i in range(len(value)):
+                    text_node_feat[cnt] = value[i] # .detach().cpu()
+                    cnt += 1  
+
+            n_patch = len(indexes)
+
+            # 531 subjects
+            graph_data = dgl.heterograph( 
+                    {
+                    ('image', 'image_gene', 'gene'): (   th.tensor( [i for i in range(0,n_patch)]),   th.tensor([0]*n_patch)  ), # n_patch
+                    ('gene', 'image_gene', 'image'): (   th.tensor([0]*n_patch),  th.tensor( [i for i in range(0,n_patch)])), # n_patch
+                    ('image', 'image_text', 'text'): (   th.tensor(  [num for num in range(0, n_patch) for _ in range(15)] ), th.tensor( list(range(0,15))*n_patch )   ), # n_patch*15
+                    ('text', 'image_text', 'image'): (    th.tensor( list(range(0,15))*n_patch ),  th.tensor(  [num for num in range(0, n_patch) for _ in range(15)] )  ) # n_patch*15
+                    }
+                ).to('cuda')
+            graph_data.nodes['image'].data['feat'] = torch.tensor(image_node_feat)
+            graph_data.nodes['text'].data['feat'] = torch.tensor(text_node_feat)
+            graph_data.nodes['gene'].data['feat'] = torch.tensor(gene_node_feat)
+
+            '''
+            Reminder:
+
+            这里的type是4类, 不是想象中的两类...
+            '''
+
+            # image-gene, n_patch*1
+            # image-text, n_patch*15
+            edge_sim = []
+            for i in range(n_patch):
+                corr = pearsonr(image_node_feat[i].detach().cpu(), gene_node_feat[0].detach().cpu())[0]
+                edge_sim.append(corr)
+            # repeat edge_sim
+            # graph_data.edata[('image', 'image_gene', 'gene')].update( {'sim': torch.tensor(edge_sim)} )
+            graph_data.edges[('image', 'image_gene', 'gene')].data['sim'] =  torch.tensor(edge_sim).to('cuda')
+            graph_data.edges[('gene', 'image_gene', 'image')].data['sim'] =  torch.tensor(edge_sim).to('cuda')
+
+
+            edge_sim = []
+            for i in range(n_patch):
+                for j in range(15):
+                    corr = pearsonr(image_node_feat[i].detach().cpu(), text_node_feat[j].detach().cpu())[0]
+                    edge_sim.append(corr)
+            # edge_sim = edge_sim * 2
+            # graph_data['image_text'].edata.update({'sim': torch.tensor(edge_sim)})
+            graph_data.edges[('image', 'image_text', 'text')].data['sim'] =  torch.tensor(edge_sim).to('cuda')
+            graph_data.edges[('text', 'image_text', 'image')].data['sim'] =  torch.tensor(edge_sim).to('cuda')
+
+            graph_logit = self.gnn(graph_data.to('cuda'))
+            for i in range(n_patch):
+                graph_logits.append(graph_logit)
+        
+        graph_logits = torch.cat(graph_logits,dim=0)
+            
+        return { 
+              'image_embed': image_embed, # [1072, 512]
+              'text_embed': text_embed, # 3 * [5,512]
+              'omic_embed': omic_embed, # [1072, 512]
+              'logit_scale': self.logit_scale.exp(),  # 100
+              'graph_logits': graph_logits
+              }
+
+
 class PromptLearner(nn.Module):
     def __init__(self, cfg, args, n_cls, n_des, clip_model, tokenizer, text):
         super().__init__()
@@ -1445,12 +1821,14 @@ class ULIP_WITH_IMAGE(nn.Module):
 def get_loss(args):
     # return losses.ULIPWithImageLoss()
     # return losses.GeneLIPWithImageLoss(args)
-    if args.only_vis_cls_head:
-        return losses.VisClsLoss(args)
-    elif args.gene_lm is not None:
-        return losses.CITEImage_ContGene_Loss(args)
-    else:
-        return losses.CITEImageLoss(args)
+    # if args.only_vis_cls_head:
+    #     return losses.VisClsLoss(args)
+    # elif args.gene_lm is not None:
+    #     return losses.CITEImage_ContGene_Loss(args)
+    # else:
+    #     return losses.CITEImageLoss(args)
+
+    return losses.CITEImage_ContGene_Graph_Loss(args)
 
 
 def get_metric_names(args):
@@ -1459,7 +1837,7 @@ def get_metric_names(args):
     # return ['loss', 'ulip_loss', 'ulip_omic_image_matching_acc', 'ulip_omic_text_matching_acc', 'ulip_image_text_matching_acc']
 
     if args.gene_lm:
-        return ['loss','image_text_cls_loss', 'omic_text_cls_loss', 'image_omic_cont_loss', 'image_text_cls_acc', 'omic_text_cls_acc', 'image_omic_cont_acc']
+        return ['loss','image_text_cls_loss', 'omic_text_cls_loss', 'image_omic_cont_loss', 'image_text_cls_acc', 'omic_text_cls_acc', 'image_omic_cont_acc', 'graph_cls_acc']
     else:
         return ['loss', 'image_text_matching_acc']
 
@@ -2129,6 +2507,131 @@ def ULIP_GENE_LM_QuiltCLIP(args):
         for name, param in model.named_parameters(): # 把slip的参数往
             param.requires_grad = False
             for tune_name in ['omic', 'adapter', 'prompt', 'cls_head']:
+                if tune_name in name:
+                    param.requires_grad = True
+                    break
+              # else:
+              #     param.requires_grad = False
+
+        # for name, param in model.named_parameters():
+        #   if not param.requires_grad:
+        #       print('Freeze parameters {}'.format(name))
+                  
+        # for name, param in model.named_parameters():
+        #     if param.requires_grad:
+        #         print('Update parameters {}'.format(name))
+  
+
+    return model
+
+
+def ULIP_GENE_LM_QuiltCLIP_Graph(args):
+
+    biomedclip, preprocess_train, preprocess_val = open_clip.create_model_and_transforms('hf-hub:wisdomik/QuiltNet-B-32')
+    tokenizer = open_clip.get_tokenizer('hf-hub:wisdomik/QuiltNet-B-32')
+
+    for name, param in biomedclip.named_parameters():
+        print('parameters {}'.format(name))
+  
+
+    from transformers import AutoTokenizer, AutoModelForMaskedLM
+    import torch
+    from transformers import AutoTokenizer, AutoModel
+
+    if args.gene_lm == 'dnabert':
+        gene_model = AutoModel.from_pretrained("zhihan1996/DNABERT-2-117M", trust_remote_code=True)
+        # AutoModelForMaskedLM
+        gene_encoder =  gene_model.encoder
+        omic_feat_dims = 768
+
+    elif args.gene_lm == 'geneformer':
+        gene_model = AutoModelForMaskedLM.from_pretrained("ctheodoris/Geneformer")
+        gene_encoder = gene_model.bert.encoder
+        omic_feat_dims = 256
+
+    elif args.gene_lm == 'gpn':
+        import gpn.model
+        import matplotlib.pyplot as plt
+        import pandas as pd
+        import seaborn as sns
+        from sklearn.preprocessing import StandardScaler
+        import torch
+        from transformers import AutoModel, AutoModelForMaskedLM, AutoTokenizer
+        gene_model = AutoModel.from_pretrained("songlab/gpn-brassicales")
+        gene_encoder = gene_model.encoder
+        omic_feat_dims = 512
+    elif args.gene_lm == 'snn':
+        from models.gene.SNN import SNN
+        gene_encoder = SNN()
+        if args.pt_snn:
+          pt_param = torch.load('/data/cxli/code/MultiModal-learning/MICCAI-2022/checkpoints/TCGA_GBMLGG/grad_k1_0812/stage1_pathomic_teacher/stage1_pathomic_teacher_1_best.pt')['model_state_dict']
+
+          print('Loaded model from {}'.format('/data/cxli/code/MultiModal-learning/MICCAI-2022/checkpoints/TCGA_GBMLGG/grad_k1_0812/stage1_pathomic_teacher/stage1_pathomic_teacher_1_best.pt'))
+          
+          omic_pt_param = {}
+          for name, param in pt_param.items():
+              if 'omic_net' in name:
+                omic_pt_param[name.replace('omic_net.', '')] = pt_param[name]
+
+          gene_encoder.load_state_dict(omic_pt_param, strict=False)
+          omic_feat_dims = 128
+    
+    gnn = HEATNet4(
+            in_dim=512,
+            hidden_dim=512//2,
+            out_dim=3,
+            n_layers=2,
+            n_heads=4,
+            node_dict={'gene': 0, 'image': 1, 'text': 2}, # TBD
+            dropuout=0.2,
+            graph_pooling_type='mean'
+        )
+
+
+
+    model = GeneLIP_WITH_QUILTCLIP_GeneLM_Graph(embed_dim=512, vision_width=768, 
+                            gene_encoder=gene_encoder, 
+                            vl_model=biomedclip,
+                            gnn_model = gnn,
+                            context_length=77, vocab_size=49408,
+                            transformer_width=512, transformer_heads=8, transformer_layers=12, 
+                            omic_feat_dims=omic_feat_dims, args=args)
+
+    
+
+
+
+    if not args.evaluate:
+        # load the pretrained model
+        
+        # pretrain_slip_model = torch.load('./data/initialize_models/slip_base_100ep.pt', map_location=torch.device('cpu'))
+        pretrain_slip_model_params = biomedclip.state_dict()
+        # pretrain_slip_model_params = pretrain_slip_model['state_dict']
+        pretrain_slip_model_params = {param_name.replace('module.', ''): param for param_name, param in
+                                      pretrain_slip_model_params.items()}
+        '''
+        visual encoder没有载入....
+        '''
+        
+        for name, param in model.named_parameters(): # 把slip的参数往
+            # if 'visual' in name:
+            #     pass
+            #     print('a')
+            if name not in pretrain_slip_model_params:
+                continue
+
+            if isinstance(pretrain_slip_model_params[name], Parameter):
+                param_new = pretrain_slip_model_params[name].data
+            else:
+                param_new = pretrain_slip_model_params[name]
+
+            param.requires_grad = False
+            print('load {} and freeze'.format(name))
+            param.data.copy_(param_new)
+
+        for name, param in model.named_parameters(): # 把slip的参数往
+            param.requires_grad = False
+            for tune_name in ['omic', 'adapter', 'prompt', 'cls_head', 'gnn']:
                 if tune_name in name:
                     param.requires_grad = True
                     break

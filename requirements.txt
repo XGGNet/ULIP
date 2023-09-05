@@ -8,3 +8,10 @@ open3d==0.16.0
 wandb==0.13.3
 termcolor==1.1.0
 lmdb==1.3.0
+
+open_clip_torch
+
+torchsummary
+thop
+
+transformers==4.29.2

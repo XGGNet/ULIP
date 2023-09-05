@@ -490,7 +490,7 @@ class ShapeNet(data.Dataset):
 
 import collections.abc as container_abcs
 int_classes = int
-from torch._six import string_classes
+# from torch._six import string_classes
 
 import re
 default_collate_err_msg_format = (
@@ -530,7 +530,8 @@ def customized_collate_fn(batch):
         return torch.tensor(batch, dtype=torch.float64)
     elif isinstance(elem, int_classes):
         return torch.tensor(batch)
-    elif isinstance(elem, string_classes):
+    # elif isinstance(elem, string_classes):
+    elif isinstance(elem, str):
         return batch
     elif isinstance(elem, container_abcs.Mapping):
         return {key: customized_collate_fn([d[key] for d in batch]) for key in elem}

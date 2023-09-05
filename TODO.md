@@ -119,6 +119,26 @@ base2new_classbase2new_class
 - [] {CODE} base_to_new generalization pipeline
 - [] {THINK} design multi-modal graph..
 
+## 0903 ##
+- [] {EXP} add hete_graph, train in end2end
+  - 不使用graph地正常训练完一个epoch后, 在updated feature上构图for every subject, then continue training for another epoch {这种方式in-efficient, 但是掉点的可能性就小很多}
+    - 前面 非graph训练 fix不动
+    - 一个epoch 结束后进入graph: 1. graph construction from mm data, 2. apply GCN, 3. apply training loss and graph model updating..
+    - 对graph_data 首先不用任何data_loader和augmentation...
+    - 先只考虑全batch的..
 
-# 随记
+## 0905 ## 
+- 移植乐权代码的思路
+   - data pipeline 不用管, 直接输入graph即可
+   - 直接调用HEAT4网络
+- figure
+
+- how to evaluate whether adding graph work?
+    - 跑一下 torch200 不带 graph的结果
+    - 跑一下 torch200 加graph
+
+
+
+
+
 - Grading II/III/IV 这种描述能被CLIP识别出来吗? 感觉大概率得用到外部医学知识吧?
