@@ -184,7 +184,7 @@ class Dataset_OMIC(data.Dataset):
 
 import collections.abc as container_abcs
 int_classes = int
-from torch._six import string_classes
+# from torch._six import string_classes
 
 import re
 default_collate_err_msg_format = (
