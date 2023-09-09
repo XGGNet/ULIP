@@ -134,10 +134,62 @@ base2new_classbase2new_class
 - figure
 
 - how to evaluate whether adding graph work?
-    - 跑一下 torch200 不带 graph的结果
-    - 跑一下 torch200 加graph
+    - torch200 不带 graph的结果
+    - torch200 加graph (graph_cls), 但是推断不带graph的, 看下non-graph网络是否会被学的更好.. >> 发现graph_cls_loss很大..why? >> 如果只使用graph_cls_loss, 如何? 
+
+- 核心问题: graph loss是否朝着预期的方向下降? watch train_graph_cls_loss, test_graph_cls_loss; 可以先把其他网络和loss都freeze, 就对feature 用graph去拟合; 看下能不能正常拟合?  
+  - check metrics >> improve is done, so we found that the training loss on graph is not normal...
+  - 如果graph fitted to training data都做不到...那还做啥...
+
+  - *直接对image_node_feature 做分类试试, 看下loss能否正常降... -> temp1* >> 好像也不会正常掉... 
+  - 直接对node_feature 做 CE_loss也是不行.... 可能是节点和标签分配出问题了... >> infer 写的有错.. 重跑.. >>似乎没问题, OK了..
+  - 跳过 image_node assignment, 直接对image_embed做cls_loss >> OK了..
+
+-- 推断用graph
+
+- graph + residual + cls_head
+- graph + residual + cls_head + person -> cos
+
+- graph + residual + language_head
+- 用到全部节点
+
+- 改graph edge connection
 
 
+>>>>>>>
+-- 只用图像node 试下
+-- 泄露标签 (make image node only connected with the GT text node...)
+>>>>>>>
+
+0907 找到问题了...纯粹因为 training 建图时, 数据乱了, 但是label没有相应打乱..
+
+GCN是可以的....
+但是换成HEAT, 即使只用image_node, 还是崩塌...
+
+
+-- lequan code + loss
+
+
+- how to further improve? 核心思想: 先把性能堆上去, 再整合设计....
+    - 推断用graph
+    - graph_cls也使用language-based
+    - improve graph construction (edge across descriptions by world-net)
+    - how to dig out the graph relation across different subjects (graphs)?
+
+
+
+设计思路
+- 尽量主体全部放在graph层面, 非graph部分只用来前期预热
+- graph内的交互
+- graph之间的对比学习
+- test_time graph prompt tuning
+
+## 0908
+- 主体思路已经确定
+- TODO   
+  - [X] 为每个slide生成高质量的文本描述
+  - [TBD] supervise only node features or the fused node features from all modalities
+  - 
 
 
 

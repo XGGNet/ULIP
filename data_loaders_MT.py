@@ -303,7 +303,8 @@ class Pathomic_InstanceSample(Dataset):
         self.e = data[split]['e']
         self.t = data[split]['t']
         self.g = data[split]['g'] # [1072,]
-
+        
+        # ./data/TCGA_GBMLGG/all_st/TCGA-02-0001-01Z-00-DX1.83fce43e-42ac-4dcd-b156-2908e75f2e47_1.png',
 
 
         # group self.g by its labels..

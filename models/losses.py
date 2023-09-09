@@ -568,7 +568,18 @@ class CITEImage_ContGene_Graph_Loss(nn.Module):
 
         image_omic_cont_loss = self.args.w_image_omic * (F.cross_entropy(logits_per_omic_image, self.cont_labels) + F.cross_entropy(logits_per_image_omic, self.cont_labels)) / 2
 
+        '''
+        0 - 315
+        1 - 340
+        2 - 417
+        '''
         graph_loss = self.args.w_graph_cls * F.cross_entropy(outputs['graph_logits'], cls_label)
+
+        sm = F.softmax(outputs['graph_logits'], dim=-1)
+        # 打印每个通道的概率均值
+        print(sm.mean(dim=0))
+        # 打印概率最大通道的类别
+        print( (sm.argmax(dim=1)==0).sum(), (sm.argmax(dim=1)==1).sum(), (sm.argmax(dim=1)==2).sum() )
 
         loss = image_text_cls_loss + omic_text_cls_loss + image_omic_cont_loss + graph_loss
 
@@ -636,7 +647,6 @@ class CITEImage_ContGene_Graph_Loss(nn.Module):
             graph_cls_acc = 100 * correct / local_batch_size
 
 
-    
         # return {'loss': loss, 'ulip_loss': loss, 'ulip_omic_image_matching_acc': omic_image_acc, 'ulip_omic_text_matching_acc': omic_text_acc, 'ulip_image_text_matching_acc': image_text_acc}
         # return {'loss': loss, 'image_text_matching_acc': image_text_acc}
 
@@ -644,6 +654,7 @@ class CITEImage_ContGene_Graph_Loss(nn.Module):
         'image_text_cls_loss': image_text_cls_loss, 
         'omic_text_cls_loss': omic_text_cls_loss, 
         'image_omic_cont_loss': image_omic_cont_loss, 
+        'graph_cls_loss': graph_loss,
         'image_text_cls_acc': image_text_cls_acc, 
         'omic_text_cls_acc': omic_text_cls_acc, 
         'image_omic_cont_acc': image_omic_cont_acc,

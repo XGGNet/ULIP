@@ -129,5 +129,57 @@ CUDA_VISIBLE_DEVICES=3 python main_omic_medvlm.py --model ULIP_GENE_LM_QuiltCLIP
 
 ### 0905
 
-CUDA_VISIBLE_DEVICES=0 python main_omic_medvlm.py --model ULIP_GENE_LM_QuiltCLIP --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 
---exp th200~text-tune_visual-adapter_geneformer-cont_lr-div-r10_loss-w-1-0.5-0.5  --w_image_text 1 --w_image_omic 0.5 --w_omic_text 0.5 --wandb 
+# th200 baseline
+CUDA_VISIBLE_DEVICES=0 python main_omic_medvlm.py --model ULIP_GENE_LM_QuiltCLIP --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 --exp th200~text-tune_visual-adapter_geneformer-cont_lr-div-r10_loss-w-1-0.5-0.5  --w_image_text 1 --w_image_omic 0.5 --w_omic_text 0.5 --wandb 
+
+# graph, very coarse version, with only node cls loss, and we infer without using graph (that means that the graph module is just used to affect the non-graph module in testing)
+CUDA_VISIBLE_DEVICES=1 python main_omic_medvlm_graph.py --model ULIP_GENE_LM_QuiltCLIP_Graph --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 --exp th200~tr-gh-case-cls_te-nogh_text-tune_visual-adapter_geneformer-cont_lr-div-r10_loss-w-1-0.5-0.5-1  --w_image_text 1 --w_image_omic 0.5 --w_omic_text 0.5 --w_graph_cls 1 --wandb 
+
+# repeat to watch graph_cls_loss
+CUDA_VISIBLE_DEVICES=2 python main_omic_medvlm_graph.py --model ULIP_GENE_LM_QuiltCLIP_Graph --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 --exp th200~tr-gh-case-cls_te-nogh_text-tune_visual-adapter_geneformer-cont_lr-div-r10_loss-w-1-0.5-0.5-1  --w_image_text 1 --w_image_omic 0.5 --w_omic_text 0.5 --w_graph_cls 1 --wandb 
+
+# 提高lr for gnn, as i see the slow growth of acc for graph_cls_acc
+CUDA_VISIBLE_DEVICES=3 python main_omic_medvlm_graph.py --model ULIP_GENE_LM_QuiltCLIP_Graph --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 --exp th200~tr-gh-case-cls_te-nogh_text-tune_visual-adapter_geneformer-cont_lr-div-r10-h4gh_loss-w-1-0.5-0.5-1  --w_image_text 1 --w_image_omic 0.5 --w_omic_text 0.5 --w_graph_cls 1 --wandb
+
+
+
+CUDA_VISIBLE_DEVICES=0 python main_omic_medvlm_graph.py --model ULIP_GENE_LM_QuiltCLIP_Graph --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 --exp th200~tr-gh-case-cls_te-nogh_text-tune_visual-adapter_geneformer-cont_lr-div-r10-h4gh_loss-w-0-0-0-1  --w_image_text 0 --w_image_omic 0 --w_omic_text 0 --w_graph_cls 1 --wandb
+
+
+
+CUDA_VISIBLE_DEVICES=1 python main_omic_medvlm_graph.py --model ULIP_GENE_LM_QuiltCLIP_Graph --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 --exp temp1~tr-gh-case-cls_te-nogh_text-tune_visual-adapter_geneformer-cont_lr-div-r10-h4gh_loss-w-0-0-0-1  --w_image_text 0 --w_image_omic 0 --w_omic_text 0 --w_graph_cls 1 --wandb
+
+
+CUDA_VISIBLE_DEVICES=0 python main_omic_medvlm_graph.py --model ULIP_GENE_LM_QuiltCLIP_Graph --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 --exp temp1_fix-infer-bug  --w_image_text 0 --w_image_omic 0 --w_omic_text 0 --w_graph_cls 1 --wandb
+
+
+CUDA_VISIBLE_DEVICES=1 python main_omic_medvlm_graph.py --model ULIP_GENE_LM_QuiltCLIP_Graph --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 --exp temp2  --w_image_text 0 --w_image_omic 0 --w_omic_text 0 --w_graph_cls 1 --wandb
+
+
+
+CUDA_VISIBLE_DEVICES=0 python main_omic_medvlm_graph.py --model ULIP_GENE_LM_QuiltCLIP_Graph --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 --exp temp_res_clshd_fasttest  --w_image_text 0 --w_image_omic 0 --w_omic_text 0 --w_graph_cls 1 --wandb --fast_test
+
+
+CUDA_VISIBLE_DEVICES=1 python main_omic_medvlm_graph.py --model ULIP_GENE_LM_QuiltCLIP_Graph --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 --exp temp_res_clshd_fasttest  --w_image_text 0 --w_image_omic 0 --w_omic_text 0 --w_graph_cls 1 --wandb --fast_test
+
+CUDA_VISIBLE_DEVICES=0 python main_omic_medvlm_graph.py --model ULIP_GENE_LM_QuiltCLIP_Graph --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 --exp temp_res_clshd_fasttest_only_image_node  --w_image_text 0 --w_image_omic 0 --w_omic_text 0 --w_graph_cls 1 --wandb --fast_test
+
+
+CUDA_VISIBLE_DEVICES=1 python main_omic_medvlm_graph.py --model ULIP_GENE_LM_QuiltCLIP_Graph --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 --exp temp_res_clshd_fasttest_only_image_node  --w_image_text 0 --w_image_omic 0 --w_omic_text 0 --w_graph_cls 1 --wandb --fast_test
+
+CUDA_VISIBLE_DEVICES=1 python main_omic_medvlm_graph.py --model ULIP_GENE_LM_QuiltCLIP_Graph --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 --exp temp_res_clshd_fasttest_only_image_node  --w_image_text 0 --w_image_omic 0 --w_omic_text 0 --w_graph_cls 1 --wandb --fast_test
+
+
+
+CUDA_VISIBLE_DEVICES=1 python main_omic_medvlm_graph.py --model ULIP_GENE_LM_QuiltCLIP_Graph --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 --exp temp_res_clshd_fasttest_only_image_node  --w_image_text 0 --w_image_omic 0 --w_omic_text 0 --w_graph_cls 1 --wandb --fast_test
+
+
+CUDA_VISIBLE_DEVICES=0 python main_omic_medvlm_graph.py --model ULIP_GENE_LM_QuiltCLIP_Graph --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 --exp temp_only-image-node_heat4-v1_fasttest_dp0.0  --w_image_text 0 --w_image_omic 0 --w_omic_text 0 --w_graph_cls 1 --wandb --fast_test --workers 4
+
+
+CUDA_VISIBLE_DEVICES=2 python main_omic_medvlm_graph.py --model ULIP_GENE_LM_QuiltCLIP_Graph --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 --exp temp_only-image-node_heat4-v2_fasttest_dp0.0  --w_image_text 0 --w_image_omic 0 --w_omic_text 0 --w_graph_cls 1 --wandb --fast_test --workers 4
+
+
+CUDA_VISIBLE_DEVICES=3 python main_omic_medvlm_graph.py --model ULIP_GENE_LM_QuiltCLIP_Graph --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 --exp temp_all-node_heat4-v1_fasttest_dp0.0  --w_image_text 0 --w_image_omic 0 --w_omic_text 0 --w_graph_cls 1 --wandb --fast_test --workers 4
+
+CUDA_VISIBLE_DEVICES=4 python main_omic_medvlm_graph.py --model ULIP_GENE_LM_QuiltCLIP_Graph --output_dir ./outputs/MedVLM_gene_GBMLGG/ --input_size_path 224 --train_bz 1072 --test_bz 512 --test_mode patch --tune_visual adapter --normalization data --text_mode description --use_text_prompt --gene_lm geneformer --lr 0.001 --high_lr_ratio 10 --exp temp_all-node_heat4-v1_fasttest_dp0.0_add_previous_loss  --w_image_text 1 --w_image_omic 1 --w_omic_text 1 --w_graph_cls 1 --wandb --fast_test --workers 4

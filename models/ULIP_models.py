@@ -33,12 +33,16 @@ from collections import OrderedDict
 import dgl
 from scipy.stats import pearsonr
 
+import torch.nn.functional as F
+
 import torch as th
+
+import torch
 
 # from coop import *
 
 from graph_models import (
-    GCN,
+    # GCN,
     GAT,
     NTPoolGCN,
     GIN,
@@ -46,7 +50,9 @@ from graph_models import (
     HEATNet2,
     HEATNet4,
     HeteroRGCN,
+    # HEATNet4_v1,
 )
+from graph_models.HEATNet4 import *
 
 
 
@@ -1028,6 +1034,10 @@ class GeneLIP_WITH_QUILTCLIP_GeneLM_Graph(nn.Module):
         if self.args.only_vis_cls_head:
             self.cls_head = nn.Linear(512, 3)
 
+        '''
+        Temp
+        '''
+        # self.cls_head = nn.Linear(512, 3)
         
         self.use_text_prompt = self.args.use_text_prompt 
         
@@ -1105,7 +1115,23 @@ class GeneLIP_WITH_QUILTCLIP_GeneLM_Graph(nn.Module):
             self.text_token = text_token
 
 
-        self.gnn = gnn_model
+        # self.gnn = my_gcn()
+        
+        self.gnn = HEATNet4_v1(
+            in_dim=512,
+            hidden_dim=512//2,
+            out_dim=3,
+            n_layers=2,
+            n_heads=4,
+            # node_dict = {'image':0},
+            node_dict={'gene': 0, 'image': 1, 'text': 2}, # TBD
+            dropuout=0.0,
+            graph_pooling_type='mean'
+        )
+
+        # self.gnn = my_gcn()
+
+        # self.gnn = GCN(in_feats=512, n_hidden=256, n_classes=3, n_layers=1, activation=F.relu, dropout=0.0) 
                 
               
     def encode_image(self, image):
@@ -1196,9 +1222,8 @@ class GeneLIP_WITH_QUILTCLIP_GeneLM_Graph(nn.Module):
 
         logits = self.cls_head(image_embed)
 
-        return { 
-              'logits': logits
-                }
+        return { 'logits': logits}
+
 
     def find_index(self,lst,x):
         indexes = []
@@ -1208,7 +1233,7 @@ class GeneLIP_WITH_QUILTCLIP_GeneLM_Graph(nn.Module):
         return indexes
 
 
-    def forward(self, image, gene, case_name):
+    def forward(self, image, gene, label,case_name):
 
         image_embed = self.encode_image(image)
         image_embed = image_embed / image_embed.norm(dim=-1, keepdim=True)
@@ -1235,13 +1260,25 @@ class GeneLIP_WITH_QUILTCLIP_GeneLM_Graph(nn.Module):
                       text_embed_output = text_embed_output / text_embed_output.norm(dim=-1, keepdim=True)
                       text_embed[k] = text_embed_output
 
+      
         omic_embed = self.encode_omic(gene)
-        omic_embed = omic_embed / omic_embed.norm(dim=-1, keepdim=True)
+        omic_embed = omic_embed / omic_embed.norm(dim=-1, keepdim=True) # dim=512
 
-        ## constuct graph
-        case_name_base = set(case_name) # 531
-        # 引用case_name
-        case_name_base = list(case_name_base)
+        # graph_logits = self.cls_head(image_embed)
+
+        # constuct graph
+
+        case_name_base = []
+        for name in case_name:
+            if name not in case_name_base:
+              case_name_base.append(name)
+              # 
+              # 531 for train
+
+
+        # case_name_base = set(case_name) # 531
+        # # 引用case_name
+        # case_name_base = list(case_name_base)
         
         graph_logits = []
         for case_base in case_name_base:
@@ -1266,18 +1303,61 @@ class GeneLIP_WITH_QUILTCLIP_GeneLM_Graph(nn.Module):
 
             n_patch = len(indexes)
 
+            #     graph_logit = self.cls_head( image_node_feat )
+            #     graph_logits.append(graph_logit)
+            # graph_logits = torch.cat(graph_logits,dim=0) # 1072,3
+
+            edge_0 = []
+            edge_1 = []
+            edge_sim = []
+            for i in range(n_patch):
+                for j in range(n_patch):
+                    edge_0.append( i )
+                    edge_1.append( j )
+                    edge_sim.append( torch.cosine_similarity(image_node_feat[i:i+1], image_node_feat[j:j+1]) )
+
+            edge_2 = []
+            edge_3 = []
+            edge_sim2 = []
+            for i in range(15):
+                for j in range(15):
+                    edge_2.append( i )
+                    edge_3.append( j )
+                    edge_sim2.append( torch.cosine_similarity(text_node_feat[i:i+1], text_node_feat[j:j+1]) )
+
+
             # 531 subjects
             graph_data = dgl.heterograph( 
                     {
                     ('image', 'image_gene', 'gene'): (   th.tensor( [i for i in range(0,n_patch)]),   th.tensor([0]*n_patch)  ), # n_patch
                     ('gene', 'image_gene', 'image'): (   th.tensor([0]*n_patch),  th.tensor( [i for i in range(0,n_patch)])), # n_patch
                     ('image', 'image_text', 'text'): (   th.tensor(  [num for num in range(0, n_patch) for _ in range(15)] ), th.tensor( list(range(0,15))*n_patch )   ), # n_patch*15
-                    ('text', 'image_text', 'image'): (    th.tensor( list(range(0,15))*n_patch ),  th.tensor(  [num for num in range(0, n_patch) for _ in range(15)] )  ) # n_patch*15
+                    ('text', 'image_text', 'image'): (    th.tensor( list(range(0,15))*n_patch ),  th.tensor(  [num for num in range(0, n_patch) for _ in range(15)] )  ), # n_patch*15
+                    ('image', 'image_image', 'image'): ( th.tensor(edge_0), th.tensor(edge_1)  ), # n_patch
+                    ('text', 'text_text', 'text'): ( th.tensor(edge_2), th.tensor(edge_3)  ), 
+                    # ('gene', 'gene_text', 'text'): (  th.tensor([0]*15),  th.tensor( [i for i in range(0,15)]) ), # n_patch
                     }
                 ).to('cuda')
             graph_data.nodes['image'].data['feat'] = torch.tensor(image_node_feat)
             graph_data.nodes['text'].data['feat'] = torch.tensor(text_node_feat)
             graph_data.nodes['gene'].data['feat'] = torch.tensor(gene_node_feat)
+
+            graph_data.edges[('image', 'image_image', 'image')].data['sim'] = torch.tensor(edge_sim).to('cuda')
+            graph_data.edges[('text', 'text_text', 'text')].data['sim'] = torch.tensor(edge_sim2).to('cuda')
+
+            # X = image_node_feat
+            # H = (torch.ones( (n_patch, n_patch) ) - torch.eye( n_patch )).cuda()
+
+            # edge_sim = []
+            # for i in range(1):
+            #     for j in range(15):
+            #         # corr = pearsonr(image_node_feat[i].detach().cpu(), text_node_feat[j].detach().cpu())[0]
+            #         corr = torch.cosine_similarity(gene_node_feat[i:i+1], text_node_feat[j:j+1])
+            #         edge_sim.append(corr)
+            # # edge_sim = edge_sim * 2
+            # # graph_data['image_text'].edata.update({'sim': torch.tensor(edge_sim)})
+            # graph_data.edges[('gene', 'gene_text', 'text')].data['sim'] =  torch.tensor(edge_sim).to('cuda')
+
 
             '''
             Reminder:
@@ -1287,10 +1367,16 @@ class GeneLIP_WITH_QUILTCLIP_GeneLM_Graph(nn.Module):
 
             # image-gene, n_patch*1
             # image-text, n_patch*15
-            edge_sim = []
-            for i in range(n_patch):
-                corr = pearsonr(image_node_feat[i].detach().cpu(), gene_node_feat[0].detach().cpu())[0]
-                edge_sim.append(corr)
+
+            # edge_sim = []
+            # for i in range(n_patch):
+            #     corr = pearsonr(image_node_feat[i].detach().cpu(), gene_node_feat[0].detach().cpu())[0]
+            #     # cos相似度
+  
+            #     edge_sim.append(corr)
+
+            edge_sim = torch.cosine_similarity(image_node_feat, gene_node_feat)
+
             # repeat edge_sim
             # graph_data.edata[('image', 'image_gene', 'gene')].update( {'sim': torch.tensor(edge_sim)} )
             graph_data.edges[('image', 'image_gene', 'gene')].data['sim'] =  torch.tensor(edge_sim).to('cuda')
@@ -1300,16 +1386,25 @@ class GeneLIP_WITH_QUILTCLIP_GeneLM_Graph(nn.Module):
             edge_sim = []
             for i in range(n_patch):
                 for j in range(15):
-                    corr = pearsonr(image_node_feat[i].detach().cpu(), text_node_feat[j].detach().cpu())[0]
+                    # corr = pearsonr(image_node_feat[i].detach().cpu(), text_node_feat[j].detach().cpu())[0]
+                    corr = torch.cosine_similarity(image_node_feat[i:i+1], text_node_feat[j:j+1])
                     edge_sim.append(corr)
             # edge_sim = edge_sim * 2
             # graph_data['image_text'].edata.update({'sim': torch.tensor(edge_sim)})
+
+            # edge_sim = torch.cosine_similarity(image_node_feat, text_node_feat)
+
             graph_data.edges[('image', 'image_text', 'text')].data['sim'] =  torch.tensor(edge_sim).to('cuda')
             graph_data.edges[('text', 'image_text', 'image')].data['sim'] =  torch.tensor(edge_sim).to('cuda')
 
+            # graph_logit = self.gnn(graph_data.to('cuda'), features = image_node_feat)
             graph_logit = self.gnn(graph_data.to('cuda'))
-            for i in range(n_patch):
-                graph_logits.append(graph_logit)
+            # graph_logit = self.gnn(X, H)
+
+            graph_logits.append(graph_logit)
+
+            # for i in range(n_patch):
+            #     graph_logits.append(graph_logit)
         
         graph_logits = torch.cat(graph_logits,dim=0)
             
@@ -1837,7 +1932,7 @@ def get_metric_names(args):
     # return ['loss', 'ulip_loss', 'ulip_omic_image_matching_acc', 'ulip_omic_text_matching_acc', 'ulip_image_text_matching_acc']
 
     if args.gene_lm:
-        return ['loss','image_text_cls_loss', 'omic_text_cls_loss', 'image_omic_cont_loss', 'image_text_cls_acc', 'omic_text_cls_acc', 'image_omic_cont_acc', 'graph_cls_acc']
+        return ['loss','image_text_cls_loss', 'omic_text_cls_loss', 'image_omic_cont_loss', 'graph_cls_loss','image_text_cls_acc', 'omic_text_cls_acc', 'image_omic_cont_acc', 'graph_cls_acc']
     else:
         return ['loss', 'image_text_matching_acc']
 
@@ -2576,17 +2671,17 @@ def ULIP_GENE_LM_QuiltCLIP_Graph(args):
           gene_encoder.load_state_dict(omic_pt_param, strict=False)
           omic_feat_dims = 128
     
-    gnn = HEATNet4(
+    gnn = HEATNet4_v2(
             in_dim=512,
             hidden_dim=512//2,
             out_dim=3,
             n_layers=2,
             n_heads=4,
-            node_dict={'gene': 0, 'image': 1, 'text': 2}, # TBD
+            node_dict = {'image':0},
+            # node_dict={'gene': 0, 'image': 1, 'text': 2}, # TBD
             dropuout=0.2,
             graph_pooling_type='mean'
         )
-
 
 
     model = GeneLIP_WITH_QUILTCLIP_GeneLM_Graph(embed_dim=512, vision_width=768, 
@@ -2598,9 +2693,6 @@ def ULIP_GENE_LM_QuiltCLIP_Graph(args):
                             omic_feat_dims=omic_feat_dims, args=args)
 
     
-
-
-
     if not args.evaluate:
         # load the pretrained model
         

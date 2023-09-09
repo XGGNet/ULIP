@@ -9,3 +9,4 @@ BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext/
 wandb/
 run.sh
 TODO.md
+file_path.npy

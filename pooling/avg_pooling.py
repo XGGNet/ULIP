@@ -10,10 +10,15 @@ class AvgPooling(nn.Module):
 
     def forward(self, graph, feat, ntype=None):
         with graph.local_scope():
-            graph.ndata['h'] = feat
-            if ntype is None:
-                readout = mean_nodes(graph, 'h')
-            else:
-                readout = mean_nodes(graph, 'h', ntype=ntype)
+            try:
+                graph.ndata['h'] = feat
+                if ntype is None:
+                    readout = mean_nodes(graph, 'h')
+                else:
+                    readout = mean_nodes(graph, 'h', ntype=ntype)
+            except:
+                readout = feat[ntype].mean(0).unsqueeze(0)
 
-            return readout
+            # readout 就是对应类型的节点特征 的平均 (或者约等于)
+
+            return readout  # [1, 256]
